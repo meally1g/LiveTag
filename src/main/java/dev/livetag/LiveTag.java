@@ -116,16 +116,35 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return t;
     }
 
+    /** True if the TAB plugin is installed - it controls the tab list itself. */
+    private boolean hasTabPlugin() {
+        return Bukkit.getPluginManager().getPlugin("TAB") != null;
+    }
+
+    /** Asks the TAB plugin to show (or remove) the tag in the tab list. */
+    private void syncTabPlugin(Player p, boolean on) {
+        if (!hasTabPlugin()) return;
+        String cmd = "tab player " + p.getName() + " tabprefix";
+        if (on) {
+            cmd += " " + getConfig().getString("tab-prefix", "&5&l[LIVE] &r");
+        }
+        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
+    }
+
     private void apply(Player p, boolean on) {
         Team t = team();
         if (on) {
             t.addEntry(p.getName());
             p.displayName(prefix().append(Component.text(p.getName())));
-            p.playerListName(prefix().append(Component.text(p.getName())));
+            if (!hasTabPlugin()) {
+                p.playerListName(prefix().append(Component.text(p.getName())));
+            }
         } else {
             t.removeEntry(p.getName());
             p.displayName(null);
-            p.playerListName(null);
+            if (!hasTabPlugin()) {
+                p.playerListName(null);
+            }
         }
     }
 
@@ -133,6 +152,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (on) live.add(p.getUniqueId());
         else live.remove(p.getUniqueId());
         apply(p, on);
+        syncTabPlugin(p, on);
         saveData();
         p.sendMessage(Component.text(msg(on ? "enabled" : "disabled"),
                 on ? NamedTextColor.LIGHT_PURPLE : NamedTextColor.GRAY));
@@ -143,7 +163,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
-        if (live.contains(p.getUniqueId())) apply(p, true);
+        if (live.contains(p.getUniqueId())) {
+            apply(p, true);
+            // give the TAB plugin a moment to load the player first
+            Bukkit.getScheduler().runTaskLater(this, () -> syncTabPlugin(p, true), 40L);
+        }
     }
 
     @EventHandler
