@@ -109,4 +109,117 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
      * The display name covers chat, and the player list name covers the tab list.
      */
     private Team team() {
-        Scoreboard sb =
+        Scoreboard sb = Bukkit.getScoreboardManager().getMainScoreboard();
+        Team t = sb.getTeam(TEAM_NAME);
+        if (t == null) t = sb.registerNewTeam(TEAM_NAME);
+        t.prefix(prefix());
+        return t;
+    }
+
+    private void apply(Player p, boolean on) {
+        Team t = team();
+        if (on) {
+            t.addEntry(p.getName());
+            p.displayName(prefix().append(Component.text(p.getName())));
+            p.playerListName(prefix().append(Component.text(p.getName())));
+        } else {
+            t.removeEntry(p.getName());
+            p.displayName(null);
+            p.playerListName(null);
+        }
+    }
+
+    private void setLive(Player p, boolean on) {
+        if (on) live.add(p.getUniqueId());
+        else live.remove(p.getUniqueId());
+        apply(p, on);
+        saveData();
+        p.sendMessage(Component.text(msg(on ? "enabled" : "disabled"),
+                on ? NamedTextColor.LIGHT_PURPLE : NamedTextColor.GRAY));
+    }
+
+    // ------------------------------------------------------------ events
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent e) {
+        Player p = e.getPlayer();
+        if (live.contains(p.getUniqueId())) apply(p, true);
+    }
+
+    @EventHandler
+    public void onClick(InventoryClickEvent e) {
+        if (!(e.getView().getTopInventory().getHolder(false) instanceof MenuHolder)) return;
+        e.setCancelled(true);
+        if (!(e.getWhoClicked() instanceof Player p)) return;
+        if (e.getRawSlot() != BUTTON_SLOT) return;
+        if (!p.hasPermission("livetag.use")) return;
+
+        setLive(p, !live.contains(p.getUniqueId()));
+        e.getInventory().setItem(BUTTON_SLOT, button(p));
+    }
+
+    // ------------------------------------------------------------ GUI
+
+    private ItemStack button(Player p) {
+        boolean on = live.contains(p.getUniqueId());
+        ItemStack item = new ItemStack(on ? Material.PURPLE_DYE : Material.GRAY_DYE);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text("LIVE: " + (on ? "ON" : "OFF"),
+                        on ? NamedTextColor.DARK_PURPLE : NamedTextColor.GRAY)
+                .decoration(TextDecoration.ITALIC, false)
+                .decorate(TextDecoration.BOLD));
+        meta.lore(List.of(Component.text("Click to turn it " + (on ? "off" : "on"),
+                        NamedTextColor.YELLOW)
+                .decoration(TextDecoration.ITALIC, false)));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private void openMenu(Player p) {
+        Inventory inv = Bukkit.createInventory(new MenuHolder(), 27,
+                Component.text("Stream Tag", NamedTextColor.DARK_PURPLE));
+        inv.setItem(BUTTON_SLOT, button(p));
+        p.openInventory(inv);
+    }
+
+    // ------------------------------------------------------------ command
+
+    @Override
+    public boolean onCommand(@NotNull CommandSender sender, @NotNull Command cmd,
+                             @NotNull String label, @NotNull String[] args) {
+        String sub = args.length > 0 ? args[0].toLowerCase() : "toggle";
+
+        if (sub.equals("reload")) {
+            if (!sender.hasPermission("livetag.admin")) return true;
+            reloadConfig();
+            for (Player o : Bukkit.getOnlinePlayers()) {
+                if (live.contains(o.getUniqueId())) apply(o, true);
+            }
+            sender.sendMessage(Component.text("LiveTag reloaded.", NamedTextColor.GREEN));
+            return true;
+        }
+
+        if (!(sender instanceof Player p)) {
+            sender.sendMessage("Players only.");
+            return true;
+        }
+        if (!p.hasPermission("livetag.use")) {
+            p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+            return true;
+        }
+
+        switch (sub) {
+            case "menu", "gui" -> openMenu(p);
+            case "on" -> setLive(p, true);
+            case "off" -> setLive(p, false);
+            default -> setLive(p, !live.contains(p.getUniqueId()));
+        }
+        return true;
+    }
+
+    @Override
+    public List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command cmd,
+                                      @NotNull String alias, @NotNull String[] args) {
+        return args.length == 1 ? List.of("menu", "on", "off") : List.of();
+    }
+}
