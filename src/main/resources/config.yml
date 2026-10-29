@@ -159,6 +159,7 @@ mascot:
   message-seconds: 25       # how long a message stays
   max-message-length: 70
   side-offset: 1.6          # how far to the streamer's right the mascot stands
+  follow-distance: 2.5      # how close the mascot walks to you before it stops
   scale: 0.7                # mascot size (1.0 = same as a player)
   inactivity-death-hours: 48 # mascot dies if its streamer hasn't been live this long (0 = off)
   board-height: 2.4         # height of the chat board above the mascot
