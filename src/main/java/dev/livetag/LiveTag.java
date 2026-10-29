@@ -1,34 +1,71 @@
 package dev.livetag;
 
+import com.destroystokyo.paper.profile.PlayerProfile;
+import com.destroystokyo.paper.profile.ProfileProperty;
+import io.papermc.paper.datacomponent.item.ResolvableProfile;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.JoinConfiguration;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
+import org.bukkit.Color;
+import org.bukkit.GameMode;
+import org.bukkit.Particle;
+import org.bukkit.Sound;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
+import org.bukkit.entity.Boat;
+import org.bukkit.entity.Chicken;
+import org.bukkit.entity.ChestBoat;
+import org.bukkit.entity.Display;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Interaction;
+import org.bukkit.entity.ItemDisplay;
+import org.bukkit.entity.Projectile;
+import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityUnleashEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.inventory.EntityEquipment;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.LeatherArmorMeta;
+import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.scoreboard.Scoreboard;
 import org.bukkit.scoreboard.Team;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -36,14 +73,21 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -51,6 +95,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     private static final String TEAM_NAME = "lt_live";
     private static final int BUTTON_SLOT = 13;
+    private static final int FOLLOW_SLOT = 15;
 
     private static final Pattern LOGIN_RULE = Pattern.compile("^[A-Za-z0-9_]{3,25}$");
     private static final Pattern LOGIN_JSON = Pattern.compile("\"user_login\"\\s*:\\s*\"([^\"]+)\"");
@@ -72,6 +117,49 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private BukkitTask pollTask;
     private boolean warnedNoCreds;
     private boolean firstPollDone;
+
+    // mascots
+    private static final String MASCOT_TAG = "livetag_mascot";
+    private static final int[] DEFAULT_PALETTE = {
+            0xE63232, 0x32E6E6, 0xE6E632, 0x8C32E6, 0x32E632, 0xE68C32,
+            0x328CE6, 0xE632E6, 0x8CE632, 0x3232E6, 0xE6328C, 0x32E68C,
+            0x8C1C1C, 0x1C8C8C, 0x8C8C1C, 0x541C8C, 0x1C8C1C, 0x8C541C,
+            0x1C548C, 0x8C1C8C, 0x548C1C, 0x1C1C8C, 0x8C1C54, 0x1C8C54,
+            0xF27979, 0x79F2F2, 0xF2F279, 0xB679F2, 0x79F279, 0xF2B679,
+            0x79B6F2, 0xF279F2, 0xB6F279, 0x7979F2, 0xF279B6, 0x79F2B6,
+            0xFFBFBF, 0xBFFFFF, 0xFFFFBF, 0xDFBFFF, 0xBFFFBF, 0xFFDFBF,
+            0xBFDFFF, 0xFFBFFF, 0xDFFFBF, 0xBFBFFF, 0xFFBFDF, 0xBFFFDF
+    };
+    private final Map<UUID, Mascot> mascots = new HashMap<>();
+    private final Set<UUID> mascotOff = new HashSet<>();
+    private final Set<UUID> preview = new HashSet<>();
+    /** Streamers whose mascot stands still instead of following them. */
+    private final Set<UUID> stay = new HashSet<>();
+    /** Streamers who have been live on Twitch at least once - only they get a mascot. */
+    private final Set<UUID> streamed = new HashSet<>();
+    private final Set<UUID> idleDead = new HashSet<>(); // mascots that died from the streamer being offline too long
+    private final Map<UUID, Long> lastLive = new ConcurrentHashMap<>(); // when each streamer was last seen live
+    private final Map<UUID, Home> homes = new ConcurrentHashMap<>();
+    /** Armour pieces a streamer has put on their mascot (replaces the default coloured outfit). */
+    private final Map<UUID, Map<EquipmentSlot, ItemStack>> customArmor = new HashMap<>();
+    private final Map<UUID, Integer> fed = new HashMap<>();
+    /** Mascot health. Missing = full health. */
+    private final Map<UUID, Double> hpMap = new HashMap<>();
+    /** Dead mascots: owner -> time of death (epoch ms). A dead mascot leaves a grave. */
+    private final Map<UUID, Long> deadSince = new HashMap<>();
+    private final Map<UUID, Home> graves = new HashMap<>();
+    /** Who killed a dead mascot (owner -> killer). Their player head brings it back. */
+    private final Map<UUID, UUID> killers = new HashMap<>();
+    private final Map<UUID, String> killerNames = new HashMap<>();
+    /** How a mascot died when no player killed it (mob, lava, fall...). Those need a Totem of Undying. */
+    private final Map<UUID, String> deathCause = new HashMap<>();
+    private boolean dataDirty;
+    private long lastSave;
+    private final Map<UUID, Integer> colorIndex = new ConcurrentHashMap<>();
+    private TwitchChat chat;
+    private BukkitTask mascotTask;
+    private Set<String> lastChannels = new HashSet<>();
+    private boolean warnedSpawn;
 
     private File dataFile;
 
@@ -100,11 +188,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
 
         startPolling();
+        startMascots();
     }
 
     @Override
     public void onDisable() {
         if (pollTask != null) pollTask.cancel();
+        stopMascots();
         saveData();
     }
 
@@ -117,6 +207,140 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             try {
                 live.add(UUID.fromString(s));
             } catch (IllegalArgumentException ignored) {
+            }
+        }
+        for (String s : yml.getStringList("mascot-off")) {
+            try {
+                mascotOff.add(UUID.fromString(s));
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        for (String s : yml.getStringList("stay")) {
+            try {
+                stay.add(UUID.fromString(s));
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        for (String s : yml.getStringList("streamed")) {
+            try {
+                streamed.add(UUID.fromString(s));
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        for (String s2 : yml.getStringList("idle-dead")) {
+            try {
+                idleDead.add(UUID.fromString(s2));
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        ConfigurationSection ll = yml.getConfigurationSection("last-live");
+        if (ll != null) {
+            for (String key : ll.getKeys(false)) {
+                try {
+                    lastLive.put(UUID.fromString(key), ll.getLong(key));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection arm = yml.getConfigurationSection("armor");
+        if (arm != null) {
+            for (String key : arm.getKeys(false)) {
+                ConfigurationSection a = arm.getConfigurationSection(key);
+                if (a == null) continue;
+                try {
+                    UUID id = UUID.fromString(key);
+                    Map<EquipmentSlot, ItemStack> mine = new EnumMap<>(EquipmentSlot.class);
+                    for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST,
+                            EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+                        ItemStack it = a.getItemStack(slot.name());
+                        if (it != null) mine.put(slot, it);
+                    }
+                    if (!mine.isEmpty()) customArmor.put(id, mine);
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection hps = yml.getConfigurationSection("hp");
+        if (hps != null) {
+            for (String key : hps.getKeys(false)) {
+                try {
+                    hpMap.put(UUID.fromString(key), hps.getDouble(key));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection ds = yml.getConfigurationSection("dead");
+        if (ds != null) {
+            for (String key : ds.getKeys(false)) {
+                try {
+                    deadSince.put(UUID.fromString(key), ds.getLong(key));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection gs = yml.getConfigurationSection("grave");
+        if (gs != null) {
+            for (String key : gs.getKeys(false)) {
+                ConfigurationSection g = gs.getConfigurationSection(key);
+                if (g == null) continue;
+                try {
+                    graves.put(UUID.fromString(key), new Home(g.getString("world", ""),
+                            g.getDouble("x"), g.getDouble("y"), g.getDouble("z"), (float) g.getDouble("yaw")));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection cs = yml.getConfigurationSection("cause");
+        if (cs != null) {
+            for (String key : cs.getKeys(false)) {
+                try {
+                    deathCause.put(UUID.fromString(key), cs.getString(key, "It died"));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection ks = yml.getConfigurationSection("killer");
+        if (ks != null) {
+            for (String key : ks.getKeys(false)) {
+                ConfigurationSection k = ks.getConfigurationSection(key);
+                if (k == null) continue;
+                try {
+                    UUID owner = UUID.fromString(key);
+                    killers.put(owner, UUID.fromString(k.getString("id", "")));
+                    String kn = k.getString("name");
+                    if (kn != null) killerNames.put(owner, kn);
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection fs = yml.getConfigurationSection("fed");
+        if (fs != null) {
+            for (String key : fs.getKeys(false)) {
+                try {
+                    fed.put(UUID.fromString(key), fs.getInt(key));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection hs = yml.getConfigurationSection("home");
+        if (hs != null) {
+            for (String key : hs.getKeys(false)) {
+                ConfigurationSection h = hs.getConfigurationSection(key);
+                if (h == null) continue;
+                try {
+                    homes.put(UUID.fromString(key), new Home(h.getString("world", ""),
+                            h.getDouble("x"), h.getDouble("y"), h.getDouble("z"), (float) h.getDouble("yaw")));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+        }
+        ConfigurationSection cols = yml.getConfigurationSection("colors");
+        if (cols != null) {
+            for (String key : cols.getKeys(false)) {
+                try {
+                    colorIndex.put(UUID.fromString(key), cols.getInt(key));
+                } catch (IllegalArgumentException ignored) {
+                }
             }
         }
         ConfigurationSection sec = yml.getConfigurationSection("links");
@@ -133,10 +357,59 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     }
 
     private void saveData() {
+        dataDirty = false;
+        lastSave = System.currentTimeMillis();
         YamlConfiguration yml = new YamlConfiguration();
         yml.set("live", live.stream().map(UUID::toString).toList());
         for (Map.Entry<UUID, String> en : links.entrySet()) {
             yml.set("links." + en.getKey(), en.getValue());
+        }
+        yml.set("mascot-off", mascotOff.stream().map(UUID::toString).toList());
+        yml.set("stay", stay.stream().map(UUID::toString).toList());
+        yml.set("streamed", streamed.stream().map(UUID::toString).toList());
+        yml.set("idle-dead", idleDead.stream().map(UUID::toString).toList());
+        for (Map.Entry<UUID, Long> en : lastLive.entrySet()) yml.set("last-live." + en.getKey(), en.getValue());
+        for (Map.Entry<UUID, Map<EquipmentSlot, ItemStack>> en : customArmor.entrySet()) {
+            for (Map.Entry<EquipmentSlot, ItemStack> pe : en.getValue().entrySet()) {
+                yml.set("armor." + en.getKey() + "." + pe.getKey().name(), pe.getValue());
+            }
+        }
+        for (Map.Entry<UUID, Integer> en : fed.entrySet()) {
+            yml.set("fed." + en.getKey(), en.getValue());
+        }
+        for (Map.Entry<UUID, Double> en : hpMap.entrySet()) {
+            yml.set("hp." + en.getKey(), en.getValue());
+        }
+        for (Map.Entry<UUID, Long> en : deadSince.entrySet()) {
+            yml.set("dead." + en.getKey(), en.getValue());
+        }
+        for (Map.Entry<UUID, String> en : deathCause.entrySet()) {
+            yml.set("cause." + en.getKey(), en.getValue());
+        }
+        for (Map.Entry<UUID, UUID> en : killers.entrySet()) {
+            yml.set("killer." + en.getKey() + ".id", en.getValue().toString());
+            yml.set("killer." + en.getKey() + ".name", killerNames.get(en.getKey()));
+        }
+        for (Map.Entry<UUID, Home> en : graves.entrySet()) {
+            String k = "grave." + en.getKey();
+            Home h = en.getValue();
+            yml.set(k + ".world", h.world());
+            yml.set(k + ".x", h.x());
+            yml.set(k + ".y", h.y());
+            yml.set(k + ".z", h.z());
+            yml.set(k + ".yaw", (double) h.yaw());
+        }
+        for (Map.Entry<UUID, Home> en : homes.entrySet()) {
+            String k = "home." + en.getKey();
+            Home h = en.getValue();
+            yml.set(k + ".world", h.world());
+            yml.set(k + ".x", h.x());
+            yml.set(k + ".y", h.y());
+            yml.set(k + ".z", h.z());
+            yml.set(k + ".yaw", (double) h.yaw());
+        }
+        for (Map.Entry<UUID, Integer> en : colorIndex.entrySet()) {
+            yml.set("colors." + en.getKey(), en.getValue());
         }
         try {
             getDataFolder().mkdirs();
@@ -330,10 +603,27 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             UUID id = en.getKey();
             boolean nowLive = liveLogins.contains(en.getValue());
             boolean wasLive = twitchLive.contains(id);
+            if (nowLive) {
+                lastLive.put(id, System.currentTimeMillis());
+                dataDirty = true;
+            }
             if (nowLive == wasLive) continue;
 
-            if (nowLive) twitchLive.add(id);
-            else twitchLive.remove(id);
+            if (nowLive) {
+                twitchLive.add(id);
+                if (idleDead.contains(id)) reviveMascot(id, "because its streamer went live again!");
+                if (streamed.add(id)) { // their very first stream
+                    dataDirty = true;
+                    Player first = Bukkit.getPlayer(id);
+                    if (first != null) {
+                        first.sendMessage(Component.text(
+                                "You're live for the first time - your chat mascot has arrived!",
+                                NamedTextColor.LIGHT_PURPLE));
+                    }
+                }
+            } else {
+                twitchLive.remove(id);
+            }
 
             Player p = Bukkit.getPlayer(id);
             if (p != null) refresh(p);
@@ -369,11 +659,16 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (!(e.getView().getTopInventory().getHolder(false) instanceof MenuHolder)) return;
         e.setCancelled(true);
         if (!(e.getWhoClicked() instanceof Player p)) return;
-        if (e.getRawSlot() != BUTTON_SLOT) return;
         if (!p.hasPermission("livetag.use")) return;
 
-        setLive(p, !live.contains(p.getUniqueId()));
-        e.getInventory().setItem(BUTTON_SLOT, button(p));
+        if (e.getRawSlot() == BUTTON_SLOT) {
+            setLive(p, !live.contains(p.getUniqueId()));
+            e.getInventory().setItem(BUTTON_SLOT, button(p));
+        } else if (e.getRawSlot() == FOLLOW_SLOT) {
+            if (!canUseMascot(p)) return;
+            setFollow(p, stay.contains(p.getUniqueId()));
+            e.getInventory().setItem(FOLLOW_SLOT, followButton(p));
+        }
     }
 
     // ------------------------------------------------------------ GUI
@@ -393,10 +688,26 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return item;
     }
 
+    private ItemStack followButton(Player p) {
+        boolean following = !stay.contains(p.getUniqueId());
+        ItemStack item = new ItemStack(following ? Material.LEAD : Material.ARMOR_STAND);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text("Mascot: " + (following ? "FOLLOWING" : "STAYING"),
+                        following ? NamedTextColor.LIGHT_PURPLE : NamedTextColor.GRAY)
+                .decoration(TextDecoration.ITALIC, false)
+                .decorate(TextDecoration.BOLD));
+        meta.lore(List.of(Component.text(following ? "Click to make it stay where it is"
+                                : "Click to make it follow you again", NamedTextColor.YELLOW)
+                .decoration(TextDecoration.ITALIC, false)));
+        item.setItemMeta(meta);
+        return item;
+    }
+
     private void openMenu(Player p) {
         Inventory inv = Bukkit.createInventory(new MenuHolder(), 27,
                 Component.text("Stream Tag", NamedTextColor.DARK_PURPLE));
         inv.setItem(BUTTON_SLOT, button(p));
+        inv.setItem(FOLLOW_SLOT, followButton(p));
         p.openInventory(inv);
     }
 
@@ -413,6 +724,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             warnedNoCreds = false;
             accessToken = null;
             startPolling();
+            stopMascots();
+            startMascots();
             for (Player o : Bukkit.getOnlinePlayers()) {
                 if (shouldShow(o.getUniqueId())) refresh(o);
             }
@@ -426,6 +739,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         if (sub.equals("unlink")) {
             handleUnlink(sender, args);
+            return true;
+        }
+        if (sub.equals("mascot")) {
+            handleMascot(sender, args);
             return true;
         }
 
@@ -504,8 +821,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         login = login.toLowerCase(Locale.ROOT);
 
         UUID id = target.getUniqueId();
-        links.put(id, login);
+        String previous = links.put(id, login);
         twitchLive.remove(id);
+        if (!login.equals(previous)) streamed.remove(id); // a different channel has to stream first
+        colorFor(id);
         saveData();
         sender.sendMessage(Component.text("Linked " + target.getName() + " to twitch.tv/" + login
                 + ". Live status is checked every "
@@ -551,6 +870,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return;
         }
         twitchLive.remove(id);
+        streamed.remove(id);
         saveData();
         Player online = Bukkit.getPlayer(id);
         if (online != null) refresh(online);
@@ -564,8 +884,23 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             List<String> subs = new ArrayList<>(List.of("menu", "on", "off", "status"));
             subs.add("link");
             subs.add("unlink");
+            subs.add("mascot");
             if (sender.hasPermission("livetag.admin")) subs.add("reload");
             return subs;
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("mascot")) {
+            return List.of("on", "off", "follow", "here", "preview", "revive", "color");
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("mascot")
+                && (args[1].equalsIgnoreCase("color") || args[1].equalsIgnoreCase("revive"))
+                && sender.hasPermission("livetag.admin")) {
+            List<String> names = new ArrayList<>();
+            for (Player o : Bukkit.getOnlinePlayers()) names.add(o.getName());
+            return names;
+        }
+        if (args.length == 4 && args[0].equalsIgnoreCase("mascot") && args[1].equalsIgnoreCase("color")
+                && sender.hasPermission("livetag.admin")) {
+            return colorNames();
         }
         if (args.length == 2 && sender.hasPermission("livetag.admin")
                 && (args[0].equalsIgnoreCase("link") || args[0].equalsIgnoreCase("unlink"))) {
@@ -574,5 +909,1412 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return names;
         }
         return List.of();
+    }
+
+    // ------------------------------------------------------------ mascots
+
+    /** One chat mascot: a mannequin (player-style figure) plus a floating text board. */
+    private static final class Mascot {
+        record Line(Component text, long expiresAt) {
+        }
+
+        final UUID owner;
+        String login; // Twitch channel, may be null (preview)
+        final int rgb;
+        Mannequin body;
+        TextDisplay board;
+        final Deque<Line> lines = new ArrayDeque<>();
+        boolean dirty = true;
+        Boolean liveShown;
+        boolean nameDirty = true;
+        LivingEntity leashProxy; // invisible leashable stand-in the lead is tied to
+        UUID leashPlayer;
+        boolean leather = true; // wearing the default coloured leather outfit (no coloured skin)
+        long lastDamage;
+        long lastRegen;
+        int ticks;
+        // grave (a dead mascot)
+        boolean isGrave;
+        Interaction tomb;
+        ItemDisplay skull;
+        Component lastGrave;
+
+        Mascot(UUID owner, String login, int rgb) {
+            this.owner = owner;
+            this.login = login;
+            this.rgb = rgb;
+        }
+
+        boolean valid() {
+            if (board == null || !board.isValid()) return false;
+            if (isGrave) return tomb != null && tomb.isValid() && skull != null && skull.isValid();
+            return body != null && body.isValid();
+        }
+
+        void remove() {
+            if (body != null) body.remove();
+            if (board != null) board.remove();
+            if (tomb != null) tomb.remove();
+            if (skull != null) skull.remove();
+            if (leashProxy != null) leashProxy.remove();
+            leashProxy = null;
+            body = null;
+            board = null;
+            tomb = null;
+            skull = null;
+        }
+    }
+
+    private void startMascots() {
+        if (!getConfig().getBoolean("mascot.enabled", true)) return;
+        chat = new TwitchChat(getLogger());
+        chat.start();
+        mascotTask = Bukkit.getScheduler().runTaskTimer(this, this::tickMascots, 40L, 5L);
+    }
+
+    /** Throws a mascot away, handing back its lead first. */
+    private void discard(Mascot m) {
+        if (m.leashProxy != null) dropLeash(m);
+        m.remove();
+    }
+
+    private void stopMascots() {
+        if (mascotTask != null) {
+            mascotTask.cancel();
+            mascotTask = null;
+        }
+        if (chat != null) {
+            chat.stop();
+            chat = null;
+        }
+        for (Mascot m : new ArrayList<>(mascots.values())) discard(m);
+        mascots.clear();
+        lastChannels = new HashSet<>();
+    }
+
+    private int[] palette() {
+        List<Integer> out = new ArrayList<>();
+        for (String s : getConfig().getStringList("mascot.colors")) {
+            try {
+                out.add(Integer.parseInt(s.replace("#", "").trim(), 16));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if (out.isEmpty()) return DEFAULT_PALETTE;
+        int[] arr = new int[out.size()];
+        for (int i = 0; i < arr.length; i++) arr[i] = out.get(i);
+        return arr;
+    }
+
+    /** Every streamer gets their own colour: a random palette colour nobody else has. */
+    private int colorFor(UUID id) {
+        int[] pal = palette();
+        Integer idx = colorIndex.get(id);
+        if (idx == null) {
+            Set<Integer> used = new HashSet<>(colorIndex.values());
+            List<Integer> free = new ArrayList<>();
+            for (int i = 0; i < pal.length; i++) {
+                if (!used.contains(i)) free.add(i);
+            }
+            int pick = free.isEmpty()
+                    ? ThreadLocalRandom.current().nextInt(pal.length) // every colour taken: reuse one
+                    : free.get(ThreadLocalRandom.current().nextInt(free.size()));
+            colorIndex.put(id, pick);
+            idx = pick;
+            saveData();
+        }
+        return pal[idx % pal.length];
+    }
+
+    private double mascotScale() {
+        return Math.max(0.1, Math.min(4.0, getConfig().getDouble("mascot.scale", 0.7)));
+    }
+
+    /** Chat board height, shrunk together with the mascot. */
+    private double boardHeight() {
+        return getConfig().getDouble("mascot.board-height", 2.4) * mascotScale();
+    }
+
+    private double maxHp() {
+        return Math.max(1.0, getConfig().getDouble("mascot.health", 20.0));
+    }
+
+    private double hp(UUID id) {
+        return Math.min(maxHp(), hpMap.getOrDefault(id, maxHp()));
+    }
+
+    private void tickMascots() {
+        long now = System.currentTimeMillis();
+
+        // 1. Twitch chat -> mascot boards / revive votes
+        if (chat != null) {
+            TwitchChat.Message msg;
+            int n = 0;
+            while (n++ < 100 && (msg = chat.poll()) != null) {
+                routeChat(msg, now);
+            }
+        }
+
+        // 2. who should have a mascot
+        boolean always = getConfig().getBoolean("mascot.always-visible", true);
+        Set<UUID> wanted = new HashSet<>();
+        boolean needFirstStream = getConfig().getBoolean("mascot.require-first-stream", true);
+        for (UUID id : (always ? links.keySet() : twitchLive)) {
+            if (needFirstStream && !streamed.contains(id)) continue;
+            if (!mascotOff.contains(id)) wanted.add(id);
+        }
+        wanted.addAll(preview);
+
+        // a streamer who hasn't been live for too long loses their mascot
+        double idleHours = getConfig().getDouble("mascot.inactivity-death-hours", 48);
+        if (idleHours > 0) {
+            long limit = (long) (idleHours * 3600_000L);
+            for (UUID id : new ArrayList<>(links.keySet())) {
+                if (!streamed.contains(id) || twitchLive.contains(id) || deadSince.containsKey(id)) continue;
+                Long seen = lastLive.get(id);
+                if (seen == null) { // streamed before this feature existed: start the clock now
+                    lastLive.put(id, now);
+                    dataDirty = true;
+                    continue;
+                }
+                Mascot cm = mascots.get(id);
+                if (now - seen > limit && cm != null && !cm.isGrave && cm.valid()) {
+                    killMascot(cm, null, "No stream for " + (long) idleHours + " hours");
+                    idleDead.add(id);
+                    dataDirty = true;
+                }
+            }
+        }
+
+        Set<UUID> present = new HashSet<>();
+        Set<String> channels = new HashSet<>();
+        for (UUID id : new ArrayList<>(wanted)) {
+            Player p = Bukkit.getPlayer(id);
+            boolean grave = deadSince.containsKey(id);
+
+            Location leashed = null;
+            Mascot cur = mascots.get(id);
+            if (!grave && cur != null && !cur.isGrave) leashed = leashTarget(cur);
+
+            Location target = null;
+            if (grave) {
+                Home g = graves.get(id);
+                if (g != null) target = g.toLocation();
+            } else if (leashed != null) {
+                target = leashed;
+            } else if (stay.contains(id)) {
+                Home h = homes.get(id);
+                if (h != null) {
+                    target = h.toLocation();
+                } else if (p != null) { // staying but no spot saved yet: stay right here
+                    target = mascotLocation(p);
+                    homes.put(id, Home.of(target));
+                }
+            } else if (p != null) {
+                target = mascotLocation(p);
+            }
+            if (target == null || target.getWorld() == null) continue;
+            present.add(id);
+
+            // never force-load far away chunks just for a mascot
+            if (!target.getWorld().isChunkLoaded(target.getBlockX() >> 4, target.getBlockZ() >> 4)) continue;
+
+            Mascot m = mascots.get(id);
+            // killed in a way we did not see (for example /kill): treat it as a normal death
+            if (m != null && !m.isGrave && m.body != null && m.body.isDead()) {
+                killMascot(m, null, null);
+                continue;
+            }
+            if (m == null || m.isGrave != grave || !m.valid()) {
+                if (m != null) discard(m);
+                m = grave ? createGrave(id, target) : createMascot(id, target);
+                if (m == null) {
+                    mascots.remove(id);
+                    continue;
+                }
+                mascots.put(id, m);
+            }
+            m.login = links.get(id);
+            m.ticks++;
+
+            if (grave) {
+                renderGrave(m, now);
+                continue;
+            }
+
+            boolean isLive = twitchLive.contains(id) || preview.contains(id);
+
+            // slow natural healing
+            double max = maxHp();
+            double cur = hp(id);
+            long regenMs = Math.max(1L, getConfig().getLong("mascot.regen-seconds", 10L)) * 1000L;
+            if (cur < max && now - m.lastDamage > regenMs && now - m.lastRegen > regenMs) {
+                hpMap.put(id, Math.min(max, cur + 1.0));
+                m.lastRegen = now;
+                m.nameDirty = true;
+                dataDirty = true;
+            }
+
+            if (m.liveShown == null || m.liveShown != isLive || m.nameDirty) {
+                m.liveShown = isLive;
+                m.nameDirty = false;
+                m.body.customName(mascotName(id, m.rgb, isLive));
+            }
+            handleBoat(m, id, p);
+            moveMascot(m, target);
+            renderBoard(m, now);
+            if (m.login != null && twitchLive.contains(id)) channels.add(m.login);
+        }
+
+        // 3. remove mascots that should not exist (disabled, or follower whose owner left)
+        Iterator<Map.Entry<UUID, Mascot>> it = mascots.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<UUID, Mascot> en = it.next();
+            if (!present.contains(en.getKey())) {
+                discard(en.getValue());
+                it.remove();
+            }
+        }
+
+        // 4. only listen to the chat of streamers who are live
+        if (chat != null && !channels.equals(lastChannels)) {
+            lastChannels = channels;
+            chat.setChannels(channels);
+        }
+
+        // 5. save changed data now and then (not on every hit)
+        if (dataDirty && now - lastSave > 5000L) saveData();
+    }
+
+    private void routeChat(TwitchChat.Message msg, long now) {
+        String name = msg.name().replaceAll("\\p{Cntrl}", "").trim();
+        if (name.length() > 25) name = name.substring(0, 25);
+        String text = cleanMessage(msg.text(), name);
+        if (text == null || name.isEmpty()) return;
+
+        long ttl = Math.max(5L, getConfig().getLong("mascot.message-seconds", 25L)) * 1000L;
+        int max = Math.max(1, getConfig().getInt("mascot.max-lines", 6));
+        // Chat is shown as plain text only - never parsed as formatting.
+        Component line = Component.empty()
+                .append(Component.text(name, NamedTextColor.AQUA, TextDecoration.BOLD))
+                .append(Component.text(": ", NamedTextColor.GRAY))
+                .append(Component.text(text, NamedTextColor.WHITE));
+
+        for (Mascot m : mascots.values()) {
+            if (!m.isGrave && m.login != null && m.login.equals(msg.channel())) {
+                addLine(m, line, now + ttl, max);
+            }
+        }
+    }
+
+    /** Cleans a viewer's message. Returns null if it should be ignored. */
+    private String cleanMessage(String raw, String user) {
+        if (raw == null) return null;
+        String text = raw.replaceAll("\\p{Cntrl}", " ").replaceAll("\\s+", " ").trim();
+        if (text.isEmpty()) return null;
+        if (getConfig().getBoolean("mascot.ignore-commands", true) && text.startsWith("!")) return null;
+        for (String ignored : getConfig().getStringList("mascot.ignored-users")) {
+            if (ignored.equalsIgnoreCase(user)) return null;
+        }
+        for (String bad : getConfig().getStringList("mascot.blocked-words")) {
+            if (bad == null || bad.isBlank()) continue;
+            text = Pattern.compile(Pattern.quote(bad), Pattern.CASE_INSENSITIVE)
+                    .matcher(text).replaceAll("***");
+        }
+        int max = Math.max(10, getConfig().getInt("mascot.max-message-length", 70));
+        if (text.length() > max) text = text.substring(0, max - 1) + "...";
+        return text;
+    }
+
+    private void addLine(Mascot m, Component line, long expiresAt, int max) {
+        m.lines.addLast(new Mascot.Line(line, expiresAt));
+        while (m.lines.size() > max) m.lines.pollFirst();
+        m.dirty = true;
+    }
+
+    private void renderBoard(Mascot m, long now) {
+        if (m.board == null) return;
+        if (m.lines.removeIf(l -> l.expiresAt() < now)) m.dirty = true;
+        if (!m.dirty) return;
+        m.dirty = false;
+
+        if (m.lines.isEmpty()) {
+            m.board.text(Component.empty());
+            m.board.setViewRange(0f); // hide the empty board
+            return;
+        }
+        List<Component> parts = new ArrayList<>();
+        for (Mascot.Line l : m.lines) parts.add(l.text());
+        m.board.text(Component.join(JoinConfiguration.newlines(), parts));
+        m.board.setViewRange(1f);
+    }
+
+    private Location mascotLocation(Player p) {
+        Location l = p.getLocation();
+        double yaw = Math.toRadians(l.getYaw());
+        double side = getConfig().getDouble("mascot.side-offset", 1.6);
+        double back = 0.5;
+        double fx = -Math.sin(yaw);
+        double fz = Math.cos(yaw);
+        double rx = -Math.cos(yaw);
+        double rz = -Math.sin(yaw);
+        Location out = l.clone().add(rx * side - fx * back, 0, rz * side - fz * back);
+        out.setPitch(0f);
+        return out;
+    }
+
+    private void moveMascot(Mascot m, Location target) {
+        double boardHeight = boardHeight();
+        if (m.body.isInsideVehicle()) { // sitting in a boat: only the chat board and lead follow
+            Location at = m.body.getLocation();
+            m.board.teleport(at.clone().add(0, boardHeight, 0));
+            if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(at.clone().add(0, 0.8, 0));
+            return;
+        }
+        Location cur = m.body.getLocation();
+        if (cur.getWorld() == target.getWorld()
+                && cur.distanceSquared(target) < 0.0004
+                && Math.abs(cur.getYaw() - target.getYaw()) < 1f) {
+            return;
+        }
+        m.body.teleport(target);
+        m.board.teleport(target.clone().add(0, boardHeight, 0));
+        if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(target.clone().add(0, 0.8, 0));
+    }
+
+    private Component mascotName(UUID id, int rgb, boolean live) {
+        String name = Bukkit.getOfflinePlayer(id).getName();
+        if (name == null) name = "Streamer";
+        Component n = Component.text(name, TextColor.color(rgb));
+        Component out = live ? prefix().append(n) : n;
+        double cur = hp(id);
+        double max = maxHp();
+        if (cur < max - 0.01) {
+            out = out.append(Component.text("  ♥ " + (int) Math.ceil(cur) + "/" + (int) max,
+                    NamedTextColor.RED));
+        }
+        return out;
+    }
+
+    private Mascot createMascot(UUID id, Location base) {
+        int rgb = colorFor(id);
+        Mascot m = new Mascot(id, links.get(id), rgb);
+        World w = base.getWorld();
+        if (w == null) return null;
+        double boardHeight = boardHeight();
+
+        final boolean[] skinned = {false};
+        try {
+            m.body = w.spawn(base, Mannequin.class, e -> {
+                e.setPersistent(false);
+                e.setSilent(true);
+                e.setGravity(false);
+                e.setCollidable(false);
+                e.setImmovable(true);
+                e.setDescription(null);
+                AttributeInstance sc = e.getAttribute(Attribute.SCALE);
+                if (sc != null) sc.setBaseValue(mascotScale());
+                e.addScoreboardTag(MASCOT_TAG);
+                e.customName(mascotName(id, rgb, false));
+                e.setCustomNameVisible(true);
+                skinned[0] = applySkin(e, id);
+                dressMascot(e, rgb, id, !skinned[0]);
+            });
+            m.leather = !skinned[0];
+            m.board = w.spawn(base.clone().add(0, boardHeight, 0), TextDisplay.class, t -> {
+                t.setPersistent(false);
+                t.addScoreboardTag(MASCOT_TAG);
+                t.setBillboard(Display.Billboard.CENTER);
+                t.setAlignment(TextDisplay.TextAlignment.LEFT);
+                t.setLineWidth(220);
+                t.setTeleportDuration(3);
+                t.setBackgroundColor(Color.fromARGB(150,
+                        (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+                t.text(Component.empty());
+                t.setViewRange(0f);
+            });
+        } catch (Exception ex) {
+            if (!warnedSpawn) {
+                warnedSpawn = true;
+                getLogger().warning("Could not spawn a chat mascot: " + ex);
+            }
+            m.remove();
+            return null;
+        }
+        return m;
+    }
+
+    private static String text(Object o) {
+        return o == null ? "" : String.valueOf(o).trim();
+    }
+
+    /**
+     * Gives the mascot its skin. Each streamer's colour has its own coloured TV skin
+     * (mascot.skins, same order as mascot.colors). Returns true if that coloured skin was used;
+     * otherwise the single fallback skin, or the default look, is used.
+     */
+    private boolean applySkin(Mannequin e, UUID id) {
+        int[] pal = palette();
+        int idx = Math.floorMod(colorIndex.getOrDefault(id, 0), pal.length);
+        String value = "";
+        String sig = "";
+        boolean colored = false;
+
+        List<Map<?, ?>> list = getConfig().getMapList("mascot.skins");
+        if (idx < list.size()) {
+            Map<?, ?> entry = list.get(idx);
+            value = text(entry.get("value"));
+            sig = text(entry.get("signature"));
+            colored = !value.isEmpty();
+        }
+        if (value.isEmpty()) {
+            value = getConfig().getString("mascot.skin-texture-value", "").trim();
+            sig = getConfig().getString("mascot.skin-texture-signature", "").trim();
+        }
+        String name = getConfig().getString("mascot.skin-name", "").trim();
+        try {
+            if (!value.isEmpty()) {
+                // a different profile id per colour so clients never mix the skins up
+                UUID profileId = UUID.nameUUIDFromBytes(
+                        ("livetag-mascot-" + (colored ? idx : -1)).getBytes(StandardCharsets.UTF_8));
+                ResolvableProfile profile = ResolvableProfile.resolvableProfile()
+                        .name("TVMascot")
+                        .uuid(profileId)
+                        .addProperty(new ProfileProperty("textures", value, sig.isEmpty() ? null : sig))
+                        .build();
+                e.setProfile(profile);
+            } else if (!name.isEmpty()) {
+                e.setProfile(ResolvableProfile.resolvableProfile().name(name).build());
+            }
+        } catch (Exception ex) {
+            getLogger().warning("Could not apply the mascot skin: " + ex.getMessage());
+            return false;
+        }
+        return colored;
+    }
+
+    /**
+     * Each streamer's colour has its own skin. Without one, the default outfit is leather armour in the colour;
+     * anything the streamer has put on the mascot themselves replaces that piece.
+     */
+    private void dressMascot(Mannequin e, int rgb, UUID id, boolean leather) {
+        EntityEquipment eq = e.getEquipment();
+        if (eq == null) return;
+        Color color = Color.fromRGB(rgb);
+        Map<EquipmentSlot, ItemStack> mine = customArmor.get(id);
+        eq.setHelmet(pick(mine, EquipmentSlot.HEAD, null));
+        eq.setChestplate(pick(mine, EquipmentSlot.CHEST, leather ? dyed(Material.LEATHER_CHESTPLATE, color) : null));
+        eq.setLeggings(pick(mine, EquipmentSlot.LEGS, leather ? dyed(Material.LEATHER_LEGGINGS, color) : null));
+        eq.setBoots(pick(mine, EquipmentSlot.FEET, leather ? dyed(Material.LEATHER_BOOTS, color) : null));
+        // The streamer keeps their own armour, so nothing should drop if the mascot is removed.
+        try {
+            for (EquipmentSlot slot : EquipmentSlot.values()) {
+                eq.setDropChance(slot, 0f);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private ItemStack pick(Map<EquipmentSlot, ItemStack> mine, EquipmentSlot slot, ItemStack fallback) {
+        ItemStack custom = mine == null ? null : mine.get(slot);
+        return custom != null ? custom.clone() : fallback;
+    }
+
+    private ItemStack dyed(Material mat, Color color) {
+        ItemStack item = new ItemStack(mat);
+        LeatherArmorMeta meta = (LeatherArmorMeta) item.getItemMeta();
+        meta.setColor(color);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    // ------------------------------------------------------------ lead and boats
+
+    /**
+     * Mannequins can't be leashed themselves, so the lead is tied to an invisible baby chicken
+     * that stays glued to the mascot. While it is leashed to a player, the mascot follows THAT
+     * player; tied to a fence it stays where it is.
+     */
+    private Location leashTarget(Mascot m) {
+        if (m.leashProxy == null) return null;
+        if (!m.leashProxy.isValid() || !m.leashProxy.isLeashed()) {
+            dropLeash(m);
+            return null;
+        }
+        Entity holder = m.leashProxy.getLeashHolder();
+        if (holder instanceof Player hp && hp.isOnline()) return mascotLocation(hp);
+        return m.body != null ? m.body.getLocation() : null;
+    }
+
+    /** The lead is gone (taken off, broken, chunk unloaded...): clean up and hand the lead back. */
+    private void dropLeash(Mascot m) {
+        LivingEntity proxy = m.leashProxy;
+        m.leashProxy = null;
+        if (proxy != null) {
+            try {
+                if (proxy.isLeashed()) proxy.setLeashHolder(null);
+            } catch (Exception ignored) {
+            }
+            proxy.remove();
+        }
+        ItemStack lead = new ItemStack(Material.LEAD);
+        Player holder = m.leashPlayer == null ? null : Bukkit.getPlayer(m.leashPlayer);
+        if (holder != null && holder.isOnline()) giveBack(holder, lead);
+        else if (m.body != null && m.body.isValid()) m.body.getWorld().dropItemNaturally(m.body.getLocation(), lead);
+        m.leashPlayer = null;
+    }
+
+    /** Right-click the mascot with a lead: put it on (or take it off again). */
+    private void useLead(Player p, Mascot m, ItemStack hand, boolean owner) {
+        boolean leashed = m.leashProxy != null && m.leashProxy.isValid() && m.leashProxy.isLeashed();
+        if (leashed) {
+            boolean holder = m.leashPlayer != null && m.leashPlayer.equals(p.getUniqueId());
+            if (holder || owner) {
+                dropLeash(m);
+                p.sendActionBar(Component.text("You took the lead off the mascot.", NamedTextColor.GRAY));
+            }
+            return;
+        }
+        if (!owner && !getConfig().getBoolean("mascot.others-can-leash", false)) return;
+
+        Chicken proxy = m.body.getWorld().spawn(m.body.getLocation().add(0, 0.8, 0), Chicken.class, c -> {
+            c.setPersistent(false);
+            c.setBaby();
+            c.setAI(false);
+            c.setSilent(true);
+            c.setInvisible(true);
+            c.setInvulnerable(true);
+            c.setCollidable(false);
+            c.setGravity(false);
+            c.addScoreboardTag(MASCOT_TAG);
+        });
+        if (!proxy.setLeashHolder(p)) {
+            proxy.remove();
+            p.sendActionBar(Component.text("The mascot can't be leashed right now.", NamedTextColor.RED));
+            return;
+        }
+        m.leashProxy = proxy;
+        m.leashPlayer = p.getUniqueId();
+        takeOne(p, hand);
+        p.sendActionBar(Component.text("The mascot is on a lead and follows you now.", NamedTextColor.LIGHT_PURPLE));
+    }
+
+    /** A lead that gets broken (too far away, holder gone): give it back and let the mascot go free. */
+    @EventHandler
+    public void onMascotUnleash(EntityUnleashEvent e) {
+        Entity ent = e.getEntity();
+        if (!isMascotEntity(ent)) return;
+        e.setDropLeash(false); // we hand the lead back ourselves
+        Mascot m = mascotOf(ent);
+        if (m != null && m.leashProxy != null && m.leashProxy.getUniqueId().equals(ent.getUniqueId())) {
+            Bukkit.getScheduler().runTask(this, () -> dropLeash(m));
+        }
+    }
+
+    /** When the person the mascot is with sits in a boat with a free seat, the mascot climbs in too. */
+    private void handleBoat(Mascot m, UUID id, Player owner) {
+        Player mate = null;
+        if (m.leashProxy != null && m.leashProxy.isValid() && m.leashProxy.isLeashed()
+                && m.leashProxy.getLeashHolder() instanceof Player holder) {
+            mate = holder;
+        } else if (!stay.contains(id)) {
+            mate = owner;
+        }
+        Entity vehicle = mate == null ? null : mate.getVehicle();
+        if (vehicle instanceof Boat boat) {
+            if (!boat.getPassengers().contains(m.body)) {
+                int seats = boat instanceof ChestBoat ? 1 : 2;
+                if (boat.getPassengers().size() < seats) boat.addPassenger(m.body);
+            }
+        } else if (m.body.getVehicle() instanceof Boat) {
+            m.body.leaveVehicle(); // the person got out, so the mascot hops out as well
+        }
+    }
+
+    // ------------------------------------------------------------ mascot interaction
+
+    private Mascot mascotOf(Entity entity) {
+        for (Mascot m : mascots.values()) {
+            if (m.body != null && m.body.getUniqueId().equals(entity.getUniqueId())) return m;
+            if (m.tomb != null && m.tomb.getUniqueId().equals(entity.getUniqueId())) return m;
+            if (m.leashProxy != null && m.leashProxy.getUniqueId().equals(entity.getUniqueId())) return m;
+        }
+        return null;
+    }
+
+    private static boolean isMascotEntity(Entity e) {
+        return e.getScoreboardTags().contains(MASCOT_TAG);
+    }
+
+    private static String describeCause(EntityDamageEvent e) {
+        if (e instanceof EntityDamageByEntityEvent byEntity) {
+            Entity damager = byEntity.getDamager();
+            if (damager instanceof Projectile pr && pr.getShooter() instanceof Entity shooter) damager = shooter;
+            String type = damager.getType().name().toLowerCase(Locale.ROOT).replace('_', ' ');
+            return "Killed by a " + type;
+        }
+        return switch (e.getCause()) {
+            case LAVA -> "Burned in lava";
+            case FIRE, FIRE_TICK, HOT_FLOOR -> "Burned to death";
+            case FALL -> "Fell from a height";
+            case VOID -> "Fell into the void";
+            case BLOCK_EXPLOSION, ENTITY_EXPLOSION -> "Blown up";
+            case MAGIC, POISON, WITHER -> "Killed by magic";
+            case LIGHTNING -> "Struck by lightning";
+            default -> "It died";
+        };
+    }
+
+    /**
+     * Damage never reaches the entity itself - we keep our own health for the mascot so that
+     * "death" is something we control (a grave and a rebirth) instead of the entity just vanishing.
+     */
+    @EventHandler(ignoreCancelled = false)
+    public void onMascotDamage(EntityDamageEvent e) {
+        Entity ent = e.getEntity();
+        if (!isMascotEntity(ent)) return;
+        e.setCancelled(true);
+
+        Mascot m = mascotOf(ent);
+        if (m == null || m.isGrave) return;
+        if (!getConfig().getBoolean("mascot.can-be-killed", true)) return;
+        switch (e.getCause()) {
+            case SUFFOCATION, DROWNING, CRAMMING, FREEZE -> {
+                return;
+            }
+            default -> {
+            }
+        }
+        double dmg = e.getFinalDamage();
+        if (dmg <= 0) return;
+
+        Player killer = null;
+        if (e instanceof EntityDamageByEntityEvent byEntity) {
+            Entity damager = byEntity.getDamager();
+            if (damager instanceof Player pl) killer = pl;
+            else if (damager instanceof Projectile pr && pr.getShooter() instanceof Player pl2) killer = pl2;
+        }
+
+        String why = describeCause(e);
+        UUID id = m.owner;
+        double left = hp(id) - dmg;
+        m.lastDamage = System.currentTimeMillis();
+        m.nameDirty = true;
+        dataDirty = true;
+        m.body.playHurtAnimation(0f);
+        m.body.getWorld().spawnParticle(Particle.DAMAGE_INDICATOR,
+                m.body.getLocation().add(0, 1.2, 0), 6, 0.3, 0.3, 0.3);
+        if (left <= 0) {
+            killMascot(m, killer, why);
+        } else {
+            hpMap.put(id, left);
+        }
+    }
+
+    /** A player who killed a mascot drops their head when they die - that is how the mascot gets revived. */
+    @EventHandler
+    public void onPlayerDeath(PlayerDeathEvent e) {
+        if (!getConfig().getBoolean("mascot.revive.killer-head-drops", true)) return;
+        Player dead = e.getEntity();
+        if (!killers.containsValue(dead.getUniqueId())) return;
+        ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+        SkullMeta meta = (SkullMeta) head.getItemMeta();
+        meta.setPlayerProfile(dead.getPlayerProfile());
+        meta.displayName(Component.text(dead.getName() + "'s Head", NamedTextColor.GOLD)
+                .decoration(TextDecoration.ITALIC, false));
+        head.setItemMeta(meta);
+        e.getDrops().add(head);
+    }
+
+    /**
+     * Right-click a mascot:
+     *  - food in hand: feed it (heals it) - anyone, unless turned off in the config
+     *  - armour in hand: put it on - the owner only
+     *  - sneaking with an empty hand: take one piece of armour off it - anyone, unless turned off
+     *  - at a grave: the head of the player who killed it brings it back (staff can use /live mascot revive)
+     */
+    @EventHandler(ignoreCancelled = false)
+    public void onMascotInteract(PlayerInteractEntityEvent e) {
+        Entity clicked = e.getRightClicked();
+        if (!isMascotEntity(clicked)) return;
+        e.setCancelled(true);
+        if (e.getHand() != EquipmentSlot.HAND) return;
+
+        Player p = e.getPlayer();
+        Mascot m = mascotOf(clicked);
+        if (m == null) return;
+        boolean owner = m.owner.equals(p.getUniqueId());
+        ItemStack hand = p.getInventory().getItemInMainHand();
+
+        if (m.isGrave) {
+            graveClick(p, m, hand);
+            return;
+        }
+
+        if (hand.getType() == Material.LEAD) {
+            useLead(p, m, hand, owner);
+            return;
+        }
+
+        if (hand.getType().isAir()) {
+            if (p.isSneaking() && (owner || getConfig().getBoolean("mascot.others-can-take-armor", true))) {
+                takeArmor(p, m);
+            }
+            return;
+        }
+        EquipmentSlot slot = hand.getType().getEquipmentSlot();
+        if (slot == EquipmentSlot.HEAD || slot == EquipmentSlot.CHEST
+                || slot == EquipmentSlot.LEGS || slot == EquipmentSlot.FEET) {
+            if (owner) equipArmor(p, m, slot, hand);
+        } else if (hand.getType().isEdible()) {
+            if (owner || getConfig().getBoolean("mascot.others-can-feed", true)) feedMascot(p, m, hand);
+        }
+    }
+
+    private void takeOne(Player p, ItemStack hand) {
+        if (p.getGameMode() == GameMode.CREATIVE) return;
+        ItemStack rest = hand.clone();
+        rest.setAmount(hand.getAmount() - 1);
+        p.getInventory().setItemInMainHand(rest.getAmount() <= 0 ? new ItemStack(Material.AIR) : rest);
+    }
+
+    private void giveBack(Player p, ItemStack item) {
+        Map<Integer, ItemStack> left = p.getInventory().addItem(item);
+        for (ItemStack rest : left.values()) {
+            p.getWorld().dropItem(p.getLocation(), rest);
+        }
+    }
+
+    private void equipArmor(Player p, Mascot m, EquipmentSlot slot, ItemStack hand) {
+        ItemStack piece = hand.clone();
+        piece.setAmount(1);
+        Map<EquipmentSlot, ItemStack> mine =
+                customArmor.computeIfAbsent(m.owner, k -> new EnumMap<>(EquipmentSlot.class));
+        ItemStack old = mine.put(slot, piece);
+
+        takeOne(p, hand);
+        if (old != null) giveBack(p, old);
+
+        EntityEquipment eq = m.body.getEquipment();
+        if (eq != null) eq.setItem(slot, piece.clone());
+        saveData();
+        p.getWorld().playSound(m.body.getLocation(), Sound.ITEM_ARMOR_EQUIP_GENERIC, 1f, 1f);
+        p.sendActionBar(Component.text("Your mascot is wearing it now.", NamedTextColor.LIGHT_PURPLE));
+    }
+
+    /** Takes one piece of the armour somebody put on the mascot (helmet first). */
+    private void takeArmor(Player p, Mascot m) {
+        Map<EquipmentSlot, ItemStack> mine = customArmor.get(m.owner);
+        ItemStack taken = null;
+        if (mine != null) {
+            for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST,
+                    EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+                taken = mine.remove(slot);
+                if (taken != null) break;
+            }
+            if (mine.isEmpty()) customArmor.remove(m.owner);
+        }
+        if (taken == null) {
+            p.sendActionBar(Component.text("Nothing to take - it only has its default outfit.",
+                    NamedTextColor.GRAY));
+            return;
+        }
+        giveBack(p, taken);
+        dressMascot(m.body, m.rgb, m.owner, m.leather);
+        saveData();
+        p.getWorld().playSound(m.body.getLocation(), Sound.ITEM_ARMOR_EQUIP_GENERIC, 1f, 0.7f);
+        p.sendActionBar(Component.text("You took a piece of armour off the mascot.", NamedTextColor.GRAY));
+    }
+
+    private void feedMascot(Player p, Mascot m, ItemStack hand) {
+        Material food = hand.getType();
+        takeOne(p, hand);
+        int count = fed.merge(m.owner, 1, Integer::sum);
+
+        double heal = Math.max(0.0, getConfig().getDouble("mascot.feed-heal", 4.0));
+        hpMap.put(m.owner, Math.min(maxHp(), hp(m.owner) + heal));
+        m.nameDirty = true;
+
+        Location mouth = m.body.getLocation().add(0, 1.9, 0);
+        m.body.getWorld().spawnParticle(Particle.HEART, mouth, 4, 0.3, 0.2, 0.3);
+        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_GENERIC_EAT, 1f, 1f);
+        m.body.swingMainHand();
+        saveData();
+        p.sendActionBar(Component.text("The mascot enjoyed the ", NamedTextColor.LIGHT_PURPLE)
+                .append(Component.translatable(food.translationKey()))
+                .append(Component.text("! (fed " + count + (count == 1 ? " time)" : " times)"))));
+    }
+
+    // ------------------------------------------------------------ death and rebirth
+
+    /** The mascot dies: lightning, armour drops, and a grave is left behind. */
+    private void killMascot(Mascot m, Player killer, String cause) {
+        UUID id = m.owner;
+        if (m.body == null) return;
+        Location at = m.body.getLocation();
+        World w = at.getWorld();
+        if (w == null) return;
+
+        deadSince.put(id, System.currentTimeMillis());
+        graves.put(id, Home.of(at));
+        if (killer != null) {
+            killers.put(id, killer.getUniqueId());
+            killerNames.put(id, killer.getName());
+            deathCause.remove(id);
+        } else {
+            killers.remove(id);
+            killerNames.remove(id);
+            deathCause.put(id, cause != null ? cause : "It died");
+        }
+        hpMap.remove(id);
+
+        if (getConfig().getBoolean("mascot.drop-armor-on-death", true)) {
+            Map<EquipmentSlot, ItemStack> mine = customArmor.remove(id);
+            if (mine != null) {
+                for (ItemStack it : mine.values()) w.dropItemNaturally(at, it);
+            }
+        }
+
+        w.strikeLightningEffect(at);
+        w.spawnParticle(Particle.SOUL, at.clone().add(0, 1, 0), 40, 0.4, 0.8, 0.4, 0.05);
+        w.playSound(at, Sound.ENTITY_ALLAY_DEATH, 1.5f, 0.6f);
+
+        if (getConfig().getBoolean("mascot.announce-death", true)) {
+            String name = Bukkit.getOfflinePlayer(id).getName();
+            if (name == null) name = "A streamer";
+            String text = killer != null
+                    ? killer.getName() + " killed " + name + "'s mascot!"
+                    : name + "'s mascot died. (" + (cause != null ? cause : "It died") + ")";
+            Bukkit.broadcast(Component.text(text, NamedTextColor.RED));
+        }
+
+        discard(m);
+        mascots.remove(id);
+        saveData();
+    }
+
+    /** Brings a dead mascot back. {@code reason} finishes the sentence "...has been reborn <reason>". */
+    private void reviveMascot(UUID id, String reason) {
+        if (!deadSince.containsKey(id)) return;
+        Home g = graves.get(id);
+        Location at = g == null ? null : g.toLocation();
+
+        deadSince.remove(id);
+        graves.remove(id);
+        killers.remove(id);
+        killerNames.remove(id);
+        deathCause.remove(id);
+        hpMap.remove(id);
+        lastLive.put(id, System.currentTimeMillis()); // fresh timer after rebirth
+        idleDead.remove(id);
+
+        Mascot old = mascots.remove(id);
+        if (old != null) {
+            if (at == null && old.tomb != null) at = old.tomb.getLocation();
+            old.remove();
+        }
+        if (at != null && at.getWorld() != null) {
+            World w = at.getWorld();
+            w.strikeLightningEffect(at);
+            w.spawnParticle(Particle.TOTEM_OF_UNDYING, at.clone().add(0, 1, 0), 80, 0.5, 0.8, 0.5, 0.3);
+            w.playSound(at, Sound.ITEM_TOTEM_USE, 1f, 1f);
+        }
+        if (getConfig().getBoolean("mascot.revive.announce", true)) {
+            String name = Bukkit.getOfflinePlayer(id).getName();
+            if (name == null) name = "A streamer";
+            Bukkit.broadcast(Component.text(name + "'s mascot has been reborn " + reason,
+                    NamedTextColor.LIGHT_PURPLE));
+        }
+        saveData();
+    }
+
+    /** True if the item is the player head of the given player. */
+    private boolean isHeadOf(ItemStack item, UUID id, String name) {
+        if (item.getType() != Material.PLAYER_HEAD) return false;
+        if (!(item.getItemMeta() instanceof SkullMeta meta)) return false;
+        PlayerProfile profile = meta.getPlayerProfile();
+        if (profile == null) return false;
+        if (id.equals(profile.getId())) return true;
+        return name != null && profile.getName() != null && profile.getName().equalsIgnoreCase(name);
+    }
+
+    private void graveClick(Player p, Mascot m, ItemStack hand) {
+        UUID owner = m.owner;
+        UUID killerId = killers.get(owner);
+
+        if (idleDead.contains(owner)) {
+            p.sendActionBar(Component.text("It faded away from a lack of streams. It returns when its streamer goes live, or staff can revive it.",
+                    NamedTextColor.GRAY));
+            return;
+        }
+
+        if (killerId != null) {
+            // killed by a player: only that player's head brings it back
+            String killerName = killerNames.getOrDefault(owner, "its killer");
+            if (isHeadOf(hand, killerId, killerName)) {
+                takeOne(p, hand);
+                reviveMascot(owner, "with the head of " + killerName + ", thanks to " + p.getName() + "!");
+                return;
+            }
+            p.sendActionBar(Component.text("It needs the head of " + killerName + ", who killed it.",
+                    NamedTextColor.GRAY));
+            return;
+        }
+
+        // killed by a mob, lava, a fall...: a Totem of Undying brings it back
+        boolean totem = getConfig().getBoolean("mascot.revive.totem", true);
+        if (totem && hand.getType() == Material.TOTEM_OF_UNDYING) {
+            takeOne(p, hand);
+            reviveMascot(owner, "with a Totem of Undying, thanks to " + p.getName() + "!");
+            return;
+        }
+        p.sendActionBar(Component.text(totem ? "It needs a Totem of Undying." : "Only staff can bring it back.",
+                NamedTextColor.GRAY));
+    }
+
+    private Mascot createGrave(UUID id, Location at) {
+        Mascot m = new Mascot(id, links.get(id), colorFor(id));
+        m.isGrave = true;
+        World w = at.getWorld();
+        if (w == null) return null;
+        try {
+            m.tomb = w.spawn(at, Interaction.class, i -> {
+                i.setPersistent(false);
+                i.addScoreboardTag(MASCOT_TAG);
+                i.setInteractionWidth(1.0f);
+                i.setInteractionHeight(1.6f);
+                i.setResponsive(true);
+            });
+            m.skull = w.spawn(at.clone().add(0, 0.9, 0), ItemDisplay.class, d -> {
+                d.setPersistent(false);
+                d.addScoreboardTag(MASCOT_TAG);
+                d.setItemStack(new ItemStack(Material.WITHER_SKELETON_SKULL));
+                d.setBillboard(Display.Billboard.VERTICAL);
+            });
+            m.board = w.spawn(at.clone().add(0, 1.9, 0), TextDisplay.class, t -> {
+                t.setPersistent(false);
+                t.addScoreboardTag(MASCOT_TAG);
+                t.setBillboard(Display.Billboard.CENTER);
+                t.setAlignment(TextDisplay.TextAlignment.CENTER);
+                t.setLineWidth(220);
+                t.setBackgroundColor(Color.fromARGB(170, 20, 20, 20));
+                t.text(Component.empty());
+            });
+        } catch (Exception ex) {
+            if (!warnedSpawn) {
+                warnedSpawn = true;
+                getLogger().warning("Could not spawn a mascot grave: " + ex);
+            }
+            m.remove();
+            return null;
+        }
+        return m;
+    }
+
+    private void renderGrave(Mascot m, long now) {
+        UUID id = m.owner;
+        String name = Bukkit.getOfflinePlayer(id).getName();
+        if (name == null) name = "Streamer";
+        List<Component> lines = new ArrayList<>();
+        lines.add(Component.text("☠ " + name + "'s mascot ☠", NamedTextColor.RED, TextDecoration.BOLD));
+
+        String killerName = killerNames.get(id);
+        if (killers.containsKey(id) && killerName != null) {
+            lines.add(Component.text("Killed by " + killerName, NamedTextColor.GRAY));
+            lines.add(Component.text("Right-click with " + killerName + "'s head", NamedTextColor.YELLOW));
+        } else {
+            lines.add(Component.text(deathCause.getOrDefault(id, "It died"), NamedTextColor.GRAY));
+            if (getConfig().getBoolean("mascot.revive.totem", true)) {
+                lines.add(Component.text("Right-click with a Totem of Undying", NamedTextColor.YELLOW));
+            } else {
+                lines.add(Component.text("Only staff can bring it back", NamedTextColor.GRAY));
+            }
+        }
+
+        Component text = Component.join(JoinConfiguration.newlines(), lines);
+        if (!text.equals(m.lastGrave)) {
+            m.lastGrave = text;
+            m.board.text(text);
+        }
+        if (m.ticks % 4 == 0 && m.tomb != null) {
+            Location l = m.tomb.getLocation().add(0, 1.0, 0);
+            l.getWorld().spawnParticle(Particle.SOUL, l, 2, 0.3, 0.5, 0.3, 0.01);
+        }
+    }
+
+    /** A saved spot for a mascot that is set to stay. */
+    private record Home(String world, double x, double y, double z, float yaw) {
+        static Home of(Location l) {
+            return new Home(l.getWorld() == null ? "" : l.getWorld().getName(),
+                    l.getX(), l.getY(), l.getZ(), l.getYaw());
+        }
+
+        Location toLocation() {
+            World w = Bukkit.getWorld(world);
+            return w == null ? null : new Location(w, x, y, z, yaw, 0f);
+        }
+    }
+
+    private List<String> colorNames() {
+        List<String> out = new ArrayList<>();
+        for (Map<?, ?> e : getConfig().getMapList("mascot.skins")) {
+            out.add(text(e.get("color")).toLowerCase(Locale.ROOT));
+        }
+        return out;
+    }
+
+    /** Accepts a number (1..N) or a colour name from mascot.skins. Returns -1 if unknown. */
+    private int parseColor(String arg) {
+        String a = arg.toLowerCase(Locale.ROOT).replace('-', '_').trim();
+        int count = palette().length;
+        try {
+            int n = Integer.parseInt(a);
+            if (n >= 1 && n <= count) return n - 1;
+        } catch (NumberFormatException ignored) {
+        }
+        List<String> names = colorNames();
+        for (int i = 0; i < names.size() && i < count; i++) {
+            if (names.get(i).replace('-', '_').equals(a)) return i;
+        }
+        return -1;
+    }
+
+    private boolean canUseMascot(Player p) {
+        UUID id = p.getUniqueId();
+        if (p.hasPermission("livetag.admin")) return true;
+        if (!links.containsKey(id)) {
+            p.sendMessage(Component.text("Your Twitch account isn't linked yet - ask a staff member.",
+                    NamedTextColor.RED));
+            return false;
+        }
+        if (getConfig().getBoolean("mascot.require-first-stream", true) && !streamed.contains(id)) {
+            p.sendMessage(Component.text("Your mascot arrives the first time you go live on Twitch.",
+                    NamedTextColor.RED));
+            return false;
+        }
+        return true;
+    }
+
+    /** follow = true: mascot walks with the streamer. follow = false: it stays where it stands now. */
+    private void setFollow(Player p, boolean follow) {
+        UUID id = p.getUniqueId();
+        if (follow) {
+            stay.remove(id);
+            homes.remove(id);
+        } else {
+            Mascot m = mascots.get(id);
+            Location at = (m != null && m.valid()) ? m.body.getLocation() : mascotLocation(p);
+            stay.add(id);
+            homes.put(id, Home.of(at));
+        }
+        saveData();
+        p.sendMessage(Component.text(follow
+                        ? "Your mascot is now following you."
+                        : "Your mascot will stay where it is. Use /live mascot here to move it.",
+                follow ? NamedTextColor.LIGHT_PURPLE : NamedTextColor.GRAY));
+    }
+
+    /** /live mascot [on|off|follow|here|preview] */
+    private void handleMascot(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player p)) {
+            sender.sendMessage("Players only.");
+            return;
+        }
+        UUID id = p.getUniqueId();
+        String action = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "toggle";
+
+        if (action.equals("preview")) {
+            if (!p.hasPermission("livetag.admin")) {
+                p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+                return;
+            }
+            if (preview.remove(id)) {
+                p.sendMessage(Component.text("Mascot preview off.", NamedTextColor.GRAY));
+                return;
+            }
+            preview.add(id);
+            Mascot m = mascots.get(id);
+            if (m == null) {
+                m = createMascot(id, mascotLocation(p));
+                if (m != null) mascots.put(id, m);
+            }
+            if (m != null) {
+                long exp = System.currentTimeMillis() + 60_000L;
+                String[][] sample = {
+                        {"Viewer1", "hello chat!"},
+                        {"Viewer2", "nice stream"},
+                        {"Viewer3", "the mascot looks great"}
+                };
+                for (String[] s : sample) {
+                    addLine(m, Component.empty()
+                            .append(Component.text(s[0], NamedTextColor.AQUA, TextDecoration.BOLD))
+                            .append(Component.text(": ", NamedTextColor.GRAY))
+                            .append(Component.text(s[1], NamedTextColor.WHITE)), exp, 6);
+                }
+            }
+            p.sendMessage(Component.text("Mascot preview on for 2 minutes.", NamedTextColor.LIGHT_PURPLE));
+            Bukkit.getScheduler().runTaskLater(this, () -> preview.remove(id), 20L * 120L);
+            return;
+        }
+
+        if (action.equals("color")) {
+            if (!p.hasPermission("livetag.admin")) {
+                p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+                return;
+            }
+            if (args.length < 4) {
+                p.sendMessage(Component.text("Usage: /live mascot color <player> <color or number 1-"
+                        + palette().length + ">", NamedTextColor.YELLOW));
+                return;
+            }
+            OfflinePlayer op = Bukkit.getOfflinePlayerIfCached(args[2]);
+            if (op == null || !links.containsKey(op.getUniqueId())) {
+                p.sendMessage(Component.text("'" + args[2] + "' is not a linked streamer.", NamedTextColor.RED));
+                return;
+            }
+            int idx = parseColor(args[3]);
+            if (idx < 0) {
+                p.sendMessage(Component.text("Unknown colour '" + args[3] + "'. Press Tab to see them.",
+                        NamedTextColor.RED));
+                return;
+            }
+            UUID target = op.getUniqueId();
+            for (Map.Entry<UUID, Integer> en : colorIndex.entrySet()) {
+                if (en.getValue() == idx && !en.getKey().equals(target)) {
+                    String other = Bukkit.getOfflinePlayer(en.getKey()).getName();
+                    p.sendMessage(Component.text("That colour already belongs to "
+                            + (other != null ? other : "another streamer") + ".", NamedTextColor.RED));
+                    return;
+                }
+            }
+            colorIndex.put(target, idx);
+            saveData();
+            Mascot old = mascots.remove(target);
+            if (old != null) discard(old); // it comes back in the new colour a moment later
+            p.sendMessage(Component.text(op.getName() + " now has colour #" + (idx + 1) + ".",
+                    NamedTextColor.LIGHT_PURPLE));
+            return;
+        }
+
+        if (action.equals("revive")) {
+            if (!p.hasPermission("livetag.admin")) {
+                p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+                return;
+            }
+            UUID target = id;
+            if (args.length > 2) {
+                OfflinePlayer op = Bukkit.getOfflinePlayerIfCached(args[2]);
+                if (op == null) {
+                    p.sendMessage(Component.text("Unknown player '" + args[2] + "'.", NamedTextColor.RED));
+                    return;
+                }
+                target = op.getUniqueId();
+            }
+            if (!deadSince.containsKey(target)) {
+                p.sendMessage(Component.text("That mascot isn't dead.", NamedTextColor.GRAY));
+                return;
+            }
+            reviveMascot(target, "by staff.");
+            return;
+        }
+
+        if (!canUseMascot(p)) return;
+
+        switch (action) {
+            case "follow" -> {
+                boolean follow;
+                if (args.length > 2) follow = !args[2].equalsIgnoreCase("off");
+                else follow = stay.contains(id); // toggle
+                setFollow(p, follow);
+            }
+            case "here" -> {
+                if (!stay.contains(id)) {
+                    p.sendMessage(Component.text("Your mascot is following you. Turn that off first: /live mascot follow off",
+                            NamedTextColor.YELLOW));
+                    return;
+                }
+                homes.put(id, Home.of(mascotLocation(p)));
+                saveData();
+                p.sendMessage(Component.text("Mascot moved next to you.", NamedTextColor.LIGHT_PURPLE));
+            }
+            default -> {
+                boolean off;
+                switch (action) {
+                    case "on" -> off = false;
+                    case "off" -> off = true;
+                    default -> off = !mascotOff.contains(id);
+                }
+                if (off) mascotOff.add(id);
+                else mascotOff.remove(id);
+                saveData();
+                p.sendMessage(Component.text("Chat mascot " + (off ? "OFF" : "ON") + ".",
+                        off ? NamedTextColor.GRAY : NamedTextColor.LIGHT_PURPLE));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ Twitch chat (anonymous IRC, read-only)
+
+    /** Reads Twitch chat over IRC without logging in. */
+    static final class TwitchChat {
+        record Message(String channel, String name, String text) {
+        }
+
+        private final java.util.Queue<Message> inbox = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        private final Set<String> wanted = ConcurrentHashMap.newKeySet();
+        private final Set<String> joined = new HashSet<>();
+        private final java.util.logging.Logger log;
+        private volatile boolean running;
+        private Thread thread;
+        private java.net.Socket socket;
+        private BufferedWriter out;
+        private volatile long backoffMs = 2000L;
+
+        TwitchChat(java.util.logging.Logger log) {
+            this.log = log;
+        }
+
+        void start() {
+            running = true;
+            thread = new Thread(this::run, "LiveTag-TwitchChat");
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        void stop() {
+            running = false;
+            closeSocket();
+            if (thread != null) thread.interrupt();
+        }
+
+        Message poll() {
+            return inbox.poll();
+        }
+
+        void setChannels(Set<String> channels) {
+            wanted.retainAll(channels);
+            wanted.addAll(channels);
+            syncJoins();
+        }
+
+        private synchronized void syncJoins() {
+            if (out == null) return;
+            try {
+                for (String c : wanted) {
+                    if (joined.add(c)) send("JOIN #" + c);
+                }
+                Iterator<String> it = joined.iterator();
+                while (it.hasNext()) {
+                    String c = it.next();
+                    if (!wanted.contains(c)) {
+                        it.remove();
+                        send("PART #" + c);
+                    }
+                }
+            } catch (IOException e) {
+                closeSocket();
+            }
+        }
+
+        private synchronized void send(String line) throws IOException {
+            if (out == null) throw new IOException("not connected");
+            out.write(line);
+            out.write("\r\n");
+            out.flush();
+        }
+
+        private synchronized void closeSocket() {
+            out = null;
+            joined.clear();
+            try {
+                if (socket != null) socket.close();
+            } catch (IOException ignored) {
+            }
+            socket = null;
+        }
+
+        private void run() {
+            while (running) {
+                try {
+                    javax.net.ssl.SSLSocket s = (javax.net.ssl.SSLSocket)
+                            javax.net.ssl.SSLSocketFactory.getDefault().createSocket("irc.chat.twitch.tv", 6697);
+                    s.setSoTimeout(360_000);
+                    BufferedReader in = new BufferedReader(
+                            new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
+                    synchronized (this) {
+                        socket = s;
+                        out = new BufferedWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8));
+                        joined.clear();
+                        send("CAP REQ :twitch.tv/tags");
+                        send("PASS SCHMOOPIIE");
+                        send("NICK justinfan" + (10000 + new Random().nextInt(80000)));
+                    }
+                    String line;
+                    while (running && (line = in.readLine()) != null) {
+                        handle(line);
+                    }
+                } catch (Exception e) {
+                    if (running) log.warning("Twitch chat connection lost: " + e.getMessage());
+                }
+                closeSocket();
+                if (!running) break;
+                try {
+                    Thread.sleep(backoffMs);
+                } catch (InterruptedException e) {
+                    break;
+                }
+                backoffMs = Math.min(60_000L, backoffMs * 2);
+            }
+        }
+
+        private void handle(String line) {
+            if (line.startsWith("PING")) {
+                try {
+                    send("PONG" + line.substring(4));
+                } catch (IOException ignored) {
+                }
+                return;
+            }
+            if (line.contains(" 001 ")) {
+                backoffMs = 2000L;
+                syncJoins();
+                return;
+            }
+
+            String rest = line;
+            String tags = "";
+            if (rest.startsWith("@")) {
+                int sp = rest.indexOf(' ');
+                if (sp < 0) return;
+                tags = rest.substring(1, sp);
+                rest = rest.substring(sp + 1);
+            }
+            int pm = rest.indexOf(" PRIVMSG #");
+            if (pm < 0) return;
+
+            String nick = rest.substring(0, pm);
+            if (nick.startsWith(":")) nick = nick.substring(1);
+            int bang = nick.indexOf('!');
+            if (bang >= 0) nick = nick.substring(0, bang);
+
+            int chanStart = pm + " PRIVMSG #".length();
+            int chanEnd = rest.indexOf(' ', chanStart);
+            if (chanEnd < 0) return;
+            String channel = rest.substring(chanStart, chanEnd).toLowerCase(Locale.ROOT);
+
+            int textStart = rest.indexOf(" :", chanEnd);
+            if (textStart < 0) return;
+            String text = rest.substring(textStart + 2);
+
+            String display = nick;
+            for (String tag : tags.split(";")) {
+                if (tag.startsWith("display-name=") && tag.length() > 13) {
+                    display = tag.substring(13);
+                    break;
+                }
+            }
+            if (inbox.size() > 500) inbox.poll();
+            inbox.add(new Message(channel, display, text));
+        }
     }
 }
