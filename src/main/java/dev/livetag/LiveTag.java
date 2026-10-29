@@ -1093,8 +1093,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             boolean grave = deadSince.containsKey(id);
 
             Location leashed = null;
-            Mascot cur = mascots.get(id);
-            if (!grave && cur != null && !cur.isGrave) leashed = leashTarget(cur);
+            Mascot leashMascot = mascots.get(id);
+            if (!grave && leashMascot != null && !leashMascot.isGrave) leashed = leashTarget(leashMascot);
 
             Location target = null;
             if (grave) {
