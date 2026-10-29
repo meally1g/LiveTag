@@ -1,9 +1,29 @@
-# The tag shown before the player's name (tab list, above head, chat).
+# The tag shown before the player's name above their head and in chat.
 # Uses MiniMessage format: https://docs.advntr.dev/minimessage/format.html
 # Keep a trailing space so there's a gap before the name.
 prefix: "<dark_purple><bold>[LIVE]</bold></dark_purple> "
+
+# The tag shown in the tab list when the TAB plugin is installed
+# (uses & colour codes).
+tab-prefix: "&5&l[LIVE] &r"
 
 messages:
   enabled: "You are now LIVE - the tag is showing next to your name."
   disabled: "You are no longer LIVE - the tag is hidden."
   no-permission: "You don't have permission to use this."
+
+# Automatically show the tag while a linked streamer is live on Twitch.
+# Setup: create an app at https://dev.twitch.tv/console, then paste its
+# Client ID and Client Secret below and run /live reload.
+twitch:
+  enabled: true
+  client-id: ""
+  client-secret: ""
+  # How often to check Twitch (minimum 30).
+  check-interval-seconds: 60
+  # false = only staff can link accounts (stops people linking someone
+  # else's channel to get the tag). true = streamers can use /live link <twitch>.
+  allow-self-link: false
+  # Broadcast a message in chat when a linked streamer goes live.
+  announce: false
+  announce-message: "<dark_purple><bold>[LIVE]</bold></dark_purple> <white>%player%</white> <gray>is live on Twitch!</gray> <click:open_url:'https://twitch.tv/%twitch%'><aqua>twitch.tv/%twitch%</aqua></click>"
