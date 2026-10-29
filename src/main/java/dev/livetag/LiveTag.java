@@ -11,6 +11,9 @@ import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
+import org.bukkit.FluidCollisionMode;
+import org.bukkit.util.RayTraceResult;
+import org.bukkit.util.Vector;
 import org.bukkit.GameMode;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
@@ -158,6 +161,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private final Map<UUID, Integer> colorIndex = new ConcurrentHashMap<>();
     private TwitchChat chat;
     private BukkitTask mascotTask;
+    private BukkitTask walkTask;
     private Set<String> lastChannels = new HashSet<>();
     private boolean warnedSpawn;
 
@@ -889,10 +893,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return subs;
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("mascot")) {
-            return List.of("on", "off", "follow", "here", "preview", "revive", "color");
+            return List.of("on", "off", "follow", "here", "preview", "revive", "color", "give", "debug");
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("mascot")
-                && (args[1].equalsIgnoreCase("color") || args[1].equalsIgnoreCase("revive"))
+                && (args[1].equalsIgnoreCase("color") || args[1].equalsIgnoreCase("revive") || args[1].equalsIgnoreCase("give"))
                 && sender.hasPermission("livetag.admin")) {
             List<String> names = new ArrayList<>();
             for (Player o : Bukkit.getOnlinePlayers()) names.add(o.getName());
@@ -929,6 +933,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         boolean nameDirty = true;
         LivingEntity leashProxy; // invisible leashable stand-in the lead is tied to
         UUID leashPlayer;
+        Location walkGoal; // where it is currently walking to (null = not walking)
+        int stuck;
         boolean leather = true; // wearing the default coloured leather outfit (no coloured skin)
         long lastDamage;
         long lastRegen;
@@ -970,6 +976,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         chat = new TwitchChat(getLogger());
         chat.start();
         mascotTask = Bukkit.getScheduler().runTaskTimer(this, this::tickMascots, 40L, 5L);
+        walkTask = Bukkit.getScheduler().runTaskTimer(this, this::walkTick, 40L, 1L);
     }
 
     /** Throws a mascot away, handing back its lead first. */
@@ -982,6 +989,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (mascotTask != null) {
             mascotTask.cancel();
             mascotTask = null;
+        }
+        if (walkTask != null) {
+            walkTask.cancel();
+            walkTask = null;
         }
         if (chat != null) {
             chat.stop();
@@ -1090,6 +1101,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Set<String> channels = new HashSet<>();
         for (UUID id : new ArrayList<>(wanted)) {
             Player p = Bukkit.getPlayer(id);
+            if (deadSince.containsKey(id) && graves.get(id) == null) { // dead with no grave spot: would stay invisible
+                deadSince.remove(id);
+                dataDirty = true;
+            }
             boolean grave = deadSince.containsKey(id);
 
             Location leashed = null;
@@ -1161,7 +1176,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 m.body.customName(mascotName(id, m.rgb, isLive));
             }
             handleBoat(m, id, p);
-            moveMascot(m, target);
+            boolean walk = !grave && (leashed != null || (p != null && !stay.contains(id)));
+            if (walk && !m.body.isInsideVehicle()) {
+                // walks up to its goal in walkTick (every tick) instead of snapping next to the player
+                m.walkGoal = leashed != null ? leashed : p.getLocation();
+            } else {
+                m.walkGoal = null;
+                moveMascot(m, target);
+            }
             renderBoard(m, now);
             if (m.login != null && twitchLive.contains(id)) channels.add(m.login);
         }
@@ -1195,14 +1217,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         long ttl = Math.max(5L, getConfig().getLong("mascot.message-seconds", 25L)) * 1000L;
         int max = Math.max(1, getConfig().getInt("mascot.max-lines", 6));
         // Chat is shown as plain text only - never parsed as formatting.
-        Component line = Component.empty()
-                .append(Component.text(name, NamedTextColor.AQUA, TextDecoration.BOLD))
-                .append(Component.text(": ", NamedTextColor.GRAY))
-                .append(Component.text(text, NamedTextColor.WHITE));
-
         for (Mascot m : mascots.values()) {
             if (!m.isGrave && m.login != null && m.login.equals(msg.channel())) {
-                addLine(m, line, now + ttl, max);
+                addLine(m, bubbleLine(name, text, m.rgb), now + ttl, max);
             }
         }
     }
@@ -1224,6 +1241,17 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         int max = Math.max(10, getConfig().getInt("mascot.max-message-length", 70));
         if (text.length() > max) text = text.substring(0, max - 1) + "...";
         return text;
+    }
+
+    /** One chat line for the speech bubble: coloured name, dark text on the light bubble. */
+    private Component bubbleLine(String name, String text, int rgb) {
+        int dark = (((rgb >> 16) & 0xFF) * 55 / 100) << 16
+                | (((rgb >> 8) & 0xFF) * 55 / 100) << 8
+                | ((rgb & 0xFF) * 55 / 100);
+        return Component.empty()
+                .append(Component.text(name, net.kyori.adventure.text.format.TextColor.color(dark), TextDecoration.BOLD))
+                .append(Component.text(": ", net.kyori.adventure.text.format.TextColor.color(0x555555)))
+                .append(Component.text(text, net.kyori.adventure.text.format.TextColor.color(0x1E1E1E)));
     }
 
     private void addLine(Mascot m, Component line, long expiresAt, int max) {
@@ -1261,6 +1289,54 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Location out = l.clone().add(rx * side - fx * back, 0, rz * side - fz * back);
         out.setPitch(0f);
         return out;
+    }
+
+    /** Every tick: the mascot walks after the person it follows, like a normal mob. */
+    private void walkTick() {
+        double stop = getConfig().getDouble("mascot.follow-distance", 2.5);
+        double boardHeight = boardHeight();
+        for (Mascot m : mascots.values()) {
+            Location goal = m.walkGoal;
+            if (goal == null || m.isGrave || m.body == null || !m.body.isValid() || m.body.isInsideVehicle()) continue;
+            Location cur = m.body.getLocation();
+            World w = cur.getWorld();
+            if (w == null || goal.getWorld() != w) continue;
+
+            Location next;
+            double dx = goal.getX() - cur.getX();
+            double dz = goal.getZ() - cur.getZ();
+            double dist = Math.hypot(dx, dz);
+            if (dist > 20 || Math.abs(goal.getY() - cur.getY()) > 6 || m.stuck > 40) {
+                next = goal.clone(); // too far away or stuck: catch up instantly
+                next.setPitch(0f);
+                m.stuck = 0;
+            } else {
+                next = cur.clone();
+                if (dist > 0.05) next.setYaw((float) Math.toDegrees(Math.atan2(-dx, dz)));
+                next.setPitch(0f);
+                if (dist > stop) {
+                    double speed = dist > 8 ? 0.42 : 0.26; // runs when far behind
+                    next.add(dx / dist * speed, 0, dz / dist * speed);
+                    RayTraceResult r = w.rayTraceBlocks(next.clone().add(0, 1.3, 0), new Vector(0, -1, 0), 3.0,
+                            FluidCollisionMode.NEVER, true);
+                    double ny = r != null ? r.getHitPosition().getY() : cur.getY() - 0.4;
+                    if (ny - cur.getY() > 1.1) { // a wall: wait, and catch up if it stays stuck
+                        m.stuck++;
+                        next = cur.clone();
+                        next.setYaw((float) Math.toDegrees(Math.atan2(-dx, dz)));
+                    } else {
+                        m.stuck = 0;
+                        next.setY(ny);
+                    }
+                } else {
+                    m.stuck = 0;
+                    if (Math.abs(next.getYaw() - cur.getYaw()) < 2f) continue; // standing still and already facing you
+                }
+            }
+            m.body.teleport(next);
+            if (m.board != null && m.board.isValid()) m.board.teleport(next.clone().add(0, boardHeight, 0));
+            if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(next.clone().add(0, 0.8, 0));
+        }
     }
 
     private void moveMascot(Mascot m, Location target) {
@@ -1325,11 +1401,15 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 t.setPersistent(false);
                 t.addScoreboardTag(MASCOT_TAG);
                 t.setBillboard(Display.Billboard.CENTER);
-                t.setAlignment(TextDisplay.TextAlignment.LEFT);
+                t.setAlignment(TextDisplay.TextAlignment.CENTER);
+                t.setShadowed(false);
                 t.setLineWidth(220);
                 t.setTeleportDuration(3);
-                t.setBackgroundColor(Color.fromARGB(150,
-                        (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+                // light speech-bubble background with a faint tint of the streamer's colour
+                t.setBackgroundColor(Color.fromARGB(235,
+                        (255 * 85 + ((rgb >> 16) & 0xFF) * 15) / 100,
+                        (255 * 85 + ((rgb >> 8) & 0xFF) * 15) / 100,
+                        (255 * 85 + (rgb & 0xFF) * 15) / 100));
                 t.text(Component.empty());
                 t.setViewRange(0f);
             });
@@ -1337,6 +1417,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (!warnedSpawn) {
                 warnedSpawn = true;
                 getLogger().warning("Could not spawn a chat mascot: " + ex);
+                ex.printStackTrace();
+                for (Player adm : Bukkit.getOnlinePlayers()) {
+                    if (adm.hasPermission("livetag.admin")) {
+                        adm.sendMessage(Component.text("[LiveTag] Mascot spawn failed: " + ex, NamedTextColor.RED));
+                    }
+                }
             }
             m.remove();
             return null;
@@ -1442,7 +1528,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return null;
         }
         Entity holder = m.leashProxy.getLeashHolder();
-        if (holder instanceof Player hp && hp.isOnline()) return mascotLocation(hp);
+        if (holder instanceof Player hp && hp.isOnline()) return hp.getLocation();
         return m.body != null ? m.body.getLocation() : null;
     }
 
@@ -2046,10 +2132,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                         {"Viewer3", "the mascot looks great"}
                 };
                 for (String[] s : sample) {
-                    addLine(m, Component.empty()
-                            .append(Component.text(s[0], NamedTextColor.AQUA, TextDecoration.BOLD))
-                            .append(Component.text(": ", NamedTextColor.GRAY))
-                            .append(Component.text(s[1], NamedTextColor.WHITE)), exp, 6);
+                    addLine(m, bubbleLine(s[0], s[1], m.rgb), exp, 6);
                 }
             }
             p.sendMessage(Component.text("Mascot preview on for 2 minutes.", NamedTextColor.LIGHT_PURPLE));
@@ -2093,6 +2176,53 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (old != null) discard(old); // it comes back in the new colour a moment later
             p.sendMessage(Component.text(op.getName() + " now has colour #" + (idx + 1) + ".",
                     NamedTextColor.LIGHT_PURPLE));
+            return;
+        }
+
+        if (action.equals("debug")) {
+            if (!p.hasPermission("livetag.admin")) {
+                p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+                return;
+            }
+            Mascot dm = mascots.get(id);
+            String[] lines = {
+                    "mascot.enabled: " + getConfig().getBoolean("mascot.enabled", true),
+                    "linked to Twitch: " + links.containsKey(id),
+                    "has streamed (first stream): " + streamed.contains(id) + "  (require-first-stream: "
+                            + getConfig().getBoolean("mascot.require-first-stream", true) + ")",
+                    "mascot switched OFF by you: " + mascotOff.contains(id),
+                    "always-visible: " + getConfig().getBoolean("mascot.always-visible", true),
+                    "twitch live now: " + twitchLive.contains(id),
+                    "dead / grave: " + deadSince.containsKey(id),
+                    "mascot entity exists: " + (dm != null && dm.valid()),
+                    "follow mode: " + (stay.contains(id) ? "STAY" : "follow")
+            };
+            for (String l : lines) p.sendMessage(Component.text(l, NamedTextColor.GRAY));
+            return;
+        }
+
+        if (action.equals("give")) {
+            if (!p.hasPermission("livetag.admin")) {
+                p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+                return;
+            }
+            if (args.length < 3) {
+                p.sendMessage(Component.text("Usage: /live mascot give <player>", NamedTextColor.YELLOW));
+                return;
+            }
+            OfflinePlayer op = Bukkit.getOfflinePlayerIfCached(args[2]);
+            if (op == null || !links.containsKey(op.getUniqueId())) {
+                p.sendMessage(Component.text("'" + args[2] + "' is not a linked streamer.", NamedTextColor.RED));
+                return;
+            }
+            UUID target = op.getUniqueId();
+            streamed.add(target); // counts as having streamed, so the mascot may exist
+            lastLive.put(target, System.currentTimeMillis()); // fresh 48h timer
+            mascotOff.remove(target);
+            if (deadSince.containsKey(target)) reviveMascot(target, "by staff.");
+            saveData();
+            p.sendMessage(Component.text(op.getName() + "'s mascot is now in the world (it spawns next to "
+                    + "them, so they must be online).", NamedTextColor.LIGHT_PURPLE));
             return;
         }
 
