@@ -1,0 +1,9 @@
+# The tag shown before the player's name (tab list, above head, chat).
+# Uses MiniMessage format: https://docs.advntr.dev/minimessage/format.html
+# Keep a trailing space so there's a gap before the name.
+prefix: "<dark_purple><bold>[LIVE]</bold></dark_purple> "
+
+messages:
+  enabled: "You are now LIVE - the tag is showing next to your name."
+  disabled: "You are no longer LIVE - the tag is hidden."
+  no-permission: "You don't have permission to use this."

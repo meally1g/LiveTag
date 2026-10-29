@@ -1,0 +1,18 @@
+name: LiveTag
+main: dev.livetag.LiveTag
+version: ${project.version}
+api-version: '26.3'
+description: Toggle a [LIVE] prefix next to your name while streaming.
+commands:
+  live:
+    description: Toggle your [LIVE] tag
+    usage: /live [menu|on|off]
+    aliases: [stream, streamer]
+    permission: livetag.use
+permissions:
+  livetag.use:
+    description: Allows toggling the LIVE tag
+    default: false
+  livetag.admin:
+    description: Allows /live reload
+    default: op
