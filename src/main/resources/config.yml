@@ -27,3 +27,170 @@ twitch:
   # Broadcast a message in chat when a linked streamer goes live.
   announce: false
   announce-message: "<dark_purple><bold>[LIVE]</bold></dark_purple> <white>%player%</white> <gray>is live on Twitch!</gray> <click:open_url:'https://twitch.tv/%twitch%'><aqua>twitch.tv/%twitch%</aqua></click>"
+
+# Chat mascots: while a linked streamer is live, a TV-head figure stands next to
+# them with their own Twitch chat floating above it. Every streamer gets their own
+# mascot in their own colour (same skin, different coloured armour + board).
+mascot:
+  enabled: true
+  # true = every linked streamer's mascot is always in the world (even when they are
+  # not live on Twitch). false = the mascot only appears while they are live.
+  always-visible: true
+  # true = a streamer only gets their mascot once they have been live on Twitch at least once.
+  require-first-stream: true
+
+  # --- The skin (pick ONE) ---
+  # Option 1: copy the skin of an existing Minecraft account (put the TV-head skin
+  # on an account and write its name here, max 16 characters).
+  skin-name: ""
+  # Option 2: a skin texture value (and signature) from mineskin.org.
+  skin-texture-value: ""
+  skin-texture-signature: ""
+
+  # One coloured skin per streamer colour, in the SAME ORDER as 'colors' below (skin 1 = colour 1...).
+  # Upload skin_01_red.png etc. from the skins zip to mineskin.org (classic arms) and paste the
+  # texture value + signature. You only need as many as you have streamers - colours are handed
+  # out in order, so the first skins get used first. A colour without a skin falls back to the
+  # single skin above, or the default look with coloured leather armour.
+  # Staff can pick a streamer's colour with /live mascot color <player> <name or number>.
+  skins:
+    - { color: red, value: "", signature: "" }
+    - { color: cyan, value: "", signature: "" }
+    - { color: yellow, value: "", signature: "" }
+    - { color: violet, value: "", signature: "" }
+    - { color: green, value: "", signature: "" }
+    - { color: orange, value: "", signature: "" }
+    - { color: azure, value: "", signature: "" }
+    - { color: magenta, value: "", signature: "" }
+    - { color: lime, value: "", signature: "" }
+    - { color: blue, value: "", signature: "" }
+    - { color: rose, value: "", signature: "" }
+    - { color: mint, value: "", signature: "" }
+    - { color: deep_red, value: "", signature: "" }
+    - { color: deep_cyan, value: "", signature: "" }
+    - { color: deep_yellow, value: "", signature: "" }
+    - { color: deep_violet, value: "", signature: "" }
+    - { color: deep_green, value: "", signature: "" }
+    - { color: deep_orange, value: "", signature: "" }
+    - { color: deep_azure, value: "", signature: "" }
+    - { color: deep_magenta, value: "", signature: "" }
+    - { color: deep_lime, value: "", signature: "" }
+    - { color: deep_blue, value: "", signature: "" }
+    - { color: deep_rose, value: "", signature: "" }
+    - { color: deep_mint, value: "", signature: "" }
+    - { color: soft_red, value: "", signature: "" }
+    - { color: soft_cyan, value: "", signature: "" }
+    - { color: soft_yellow, value: "", signature: "" }
+    - { color: soft_violet, value: "", signature: "" }
+    - { color: soft_green, value: "", signature: "" }
+    - { color: soft_orange, value: "", signature: "" }
+    - { color: soft_azure, value: "", signature: "" }
+    - { color: soft_magenta, value: "", signature: "" }
+    - { color: soft_lime, value: "", signature: "" }
+    - { color: soft_blue, value: "", signature: "" }
+    - { color: soft_rose, value: "", signature: "" }
+    - { color: soft_mint, value: "", signature: "" }
+    - { color: pale_red, value: "", signature: "" }
+    - { color: pale_cyan, value: "", signature: "" }
+    - { color: pale_yellow, value: "", signature: "" }
+    - { color: pale_violet, value: "", signature: "" }
+    - { color: pale_green, value: "", signature: "" }
+    - { color: pale_orange, value: "", signature: "" }
+    - { color: pale_azure, value: "", signature: "" }
+    - { color: pale_magenta, value: "", signature: "" }
+    - { color: pale_lime, value: "", signature: "" }
+    - { color: pale_blue, value: "", signature: "" }
+    - { color: pale_rose, value: "", signature: "" }
+    - { color: pale_mint, value: "", signature: "" }
+
+  # Colours handed out to streamers in order, as hex. Each streamer keeps theirs, and no two
+  # streamers share one. Keep this list in the SAME ORDER as 'skins' (colour 1 <-> skin 1).
+  colors:
+    - "E63232"   # 1 red
+    - "32E6E6"   # 2 cyan
+    - "E6E632"   # 3 yellow
+    - "8C32E6"   # 4 violet
+    - "32E632"   # 5 green
+    - "E68C32"   # 6 orange
+    - "328CE6"   # 7 azure
+    - "E632E6"   # 8 magenta
+    - "8CE632"   # 9 lime
+    - "3232E6"   # 10 blue
+    - "E6328C"   # 11 rose
+    - "32E68C"   # 12 mint
+    - "8C1C1C"   # 13 deep_red
+    - "1C8C8C"   # 14 deep_cyan
+    - "8C8C1C"   # 15 deep_yellow
+    - "541C8C"   # 16 deep_violet
+    - "1C8C1C"   # 17 deep_green
+    - "8C541C"   # 18 deep_orange
+    - "1C548C"   # 19 deep_azure
+    - "8C1C8C"   # 20 deep_magenta
+    - "548C1C"   # 21 deep_lime
+    - "1C1C8C"   # 22 deep_blue
+    - "8C1C54"   # 23 deep_rose
+    - "1C8C54"   # 24 deep_mint
+    - "F27979"   # 25 soft_red
+    - "79F2F2"   # 26 soft_cyan
+    - "F2F279"   # 27 soft_yellow
+    - "B679F2"   # 28 soft_violet
+    - "79F279"   # 29 soft_green
+    - "F2B679"   # 30 soft_orange
+    - "79B6F2"   # 31 soft_azure
+    - "F279F2"   # 32 soft_magenta
+    - "B6F279"   # 33 soft_lime
+    - "7979F2"   # 34 soft_blue
+    - "F279B6"   # 35 soft_rose
+    - "79F2B6"   # 36 soft_mint
+    - "FFBFBF"   # 37 pale_red
+    - "BFFFFF"   # 38 pale_cyan
+    - "FFFFBF"   # 39 pale_yellow
+    - "DFBFFF"   # 40 pale_violet
+    - "BFFFBF"   # 41 pale_green
+    - "FFDFBF"   # 42 pale_orange
+    - "BFDFFF"   # 43 pale_azure
+    - "FFBFFF"   # 44 pale_magenta
+    - "DFFFBF"   # 45 pale_lime
+    - "BFBFFF"   # 46 pale_blue
+    - "FFBFDF"   # 47 pale_rose
+    - "BFFFDF"   # 48 pale_mint
+
+  max-lines: 6              # messages shown at once
+  message-seconds: 25       # how long a message stays
+  max-message-length: 70
+  side-offset: 1.6          # how far to the streamer's right the mascot stands
+  scale: 0.7                # mascot size (1.0 = same as a player)
+  inactivity-death-hours: 48 # mascot dies if its streamer hasn't been live this long (0 = off)
+  board-height: 2.4         # height of the chat board above the mascot
+
+  ignore-commands: true     # skip messages starting with !
+  ignored-users:            # bots whose messages are hidden
+    - nightbot
+    - streamelements
+    - moobot
+    - streamlabs
+    - fossabot
+  blocked-words: []         # words replaced with ***, e.g. ["badword"]
+
+  # --- Health, death and rebirth ---
+  can-be-killed: true
+  health: 20                # mascot health (20 = 10 hearts)
+  regen-seconds: 10         # heals 1 health this often when it hasn't been hurt
+  feed-heal: 4              # health restored by one food item
+  drop-armor-on-death: true # armour people put on it drops where it died
+  announce-death: true      # tell everyone in chat when it dies
+  others-can-feed: true     # anyone can feed it (owner always can)
+  others-can-take-armor: true  # anyone can take armour off it (sneak + right-click, empty hand)
+  others-can-leash: false   # false = only the owner can put a lead on it (anyone holding it can let go)
+
+  # A dead mascot leaves a grave. How it comes back depends on how it died:
+  #  - killed by a PLAYER: right-click the grave holding that player's head
+  #  - killed by a mob, lava, a fall, fire, an explosion...: right-click it with a
+  #    Totem of Undying
+  #  - staff can always use /live mascot revive <player>
+  revive:
+    totem: true             # allow the Totem of Undying for deaths not caused by a player
+    # When a player who killed a mascot dies, they drop their own head - so the way to
+    # bring the mascot back is to take revenge. Turn off if you hand out heads another way.
+    killer-head-drops: true
+    announce: true          # tell everyone in chat when it is reborn
