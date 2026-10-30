@@ -168,6 +168,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private final Map<UUID, Mascot> babyMascots = new HashMap<>();
     private final Set<UUID> babyChatOff = new HashSet<>();
     private final Set<UUID> babyStay = new HashSet<>();
+    private final Set<UUID> introPending = new HashSet<>(); // streamers whose mascot gets its big entrance
     private final Map<UUID, Double> babyHp = new HashMap<>();
     private final Map<UUID, Long> inLove = new HashMap<>(); // streamer -> until when their mascot is in love
     private final Map<UUID, Long> lastLive = new ConcurrentHashMap<>(); // when each streamer was last seen live
@@ -732,6 +733,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     // make sure the mascot really shows up next to them, with no commands needed
                     colorFor(id); // random colour no other streamer has (unless staff already chose one)
                     firstStream = true;
+                    introPending.add(id);
                     mascotOff.remove(id);
                     stay.remove(id);
                     homes.remove(id);
@@ -1017,7 +1019,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return subs;
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("mascot")) {
-            return List.of("on", "off", "follow", "here", "preview", "revive", "color", "give", "debug", "test", "baby");
+            return List.of("on", "off", "follow", "here", "preview", "revive", "color", "give", "debug", "test", "baby", "intro");
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("mascot")
                 && (args[1].equalsIgnoreCase("color") || args[1].equalsIgnoreCase("revive") || args[1].equalsIgnoreCase("give"))
@@ -1068,6 +1070,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         int seekTicks; // how long it has been trying to reach a ladder
         long jumpHeldSince; // when the owner started holding the jump key
         long sneakSince; // when the owner started crouching
+        long introHideUntil; // entrance animation: name and chat stay hidden until then
+        int lastLineCount; // lines on the board at the last render (for the scroll animation)
         float fade = 1f; // 1 = name and chat fully shown, 0 = faded out
         boolean wantHidden; // the owner has been crouching long enough: fade out
         boolean nameShown = true;
@@ -1317,6 +1321,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     continue;
                 }
                 mascots.put(id, m);
+                if (!grave && introPending.remove(id)) playIntro(m);
             }
             m.login = links.get(id);
             m.ticks++;
@@ -1569,12 +1574,36 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (m.lines.isEmpty()) {
             m.board.text(Component.empty());
             m.board.setViewRange(0f); // hide the empty board
+            m.lastLineCount = 0;
             return;
         }
         List<Component> parts = new ArrayList<>();
         for (Mascot.Line l : m.lines) parts.add(l.text());
         m.board.text(Component.join(JoinConfiguration.newlines(), parts));
         m.board.setViewRange(m.fade < 0.12f ? 0f : 1f);
+        int delta = m.lines.size() - m.lastLineCount;
+        m.lastLineCount = m.lines.size();
+        scrollBoard(m, delta);
+    }
+
+    /** Chat scroll animation: the board starts a little off and glides into place when lines come or go. */
+    private void scrollBoard(Mascot m, int delta) {
+        int ticks = getConfig().getInt("mascot.chat-scroll-ticks", 6);
+        if (ticks <= 0 || delta == 0 || m.board == null || !m.board.isValid()) return;
+        final TextDisplay board = m.board;
+        float bs = (float) Math.max(0.2, getConfig().getDouble("mascot.board-scale", 0.6));
+        float off = -0.2f * bs * Math.max(-3, Math.min(3, delta)); // a new line pushes the others up
+        board.setInterpolationDuration(0);
+        board.setInterpolationDelay(0);
+        board.setTransformation(new Transformation(new Vector3f(0, off, 0), new AxisAngle4f(),
+                new Vector3f(bs, bs, bs), new AxisAngle4f()));
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (!board.isValid()) return;
+            board.setInterpolationDuration(ticks);
+            board.setInterpolationDelay(0);
+            board.setTransformation(new Transformation(new Vector3f(0, 0, 0), new AxisAngle4f(),
+                    new Vector3f(bs, bs, bs), new AxisAngle4f()));
+        });
     }
 
     private Location mascotLocation(Player p) {
@@ -1948,8 +1977,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     /** Fades the name and the chat out while the owner crouches for a while, and back in afterwards. */
     private void fadeTick(Mascot m) {
-        float target = m.wantHidden ? 0f : 1f;
+        float target = m.wantHidden || System.currentTimeMillis() < m.introHideUntil ? 0f : 1f;
         if (m.fade == target || m.isGrave) return;
+        if (m.introHideUntil != 0 && m.fade > target && System.currentTimeMillis() < m.introHideUntil) m.fade = 0f; // entrance: hidden at once
         m.fade = m.fade < target ? Math.min(target, m.fade + 0.05f) : Math.max(target, m.fade - 0.05f);
         if (m.board != null && m.board.isValid()) {
             m.board.setTextOpacity((byte) Math.max(40, Math.round(m.fade * 255f)));
@@ -2024,6 +2054,79 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private void updateNameplate(Mannequin e, UUID id, int rgb, boolean live) {
         e.customName(mascotName(id, rgb, live));
         e.setDescription(healthBar(id));
+    }
+
+    /**
+     * The mascot's big entrance on its streamer's very first stream: a beam of light falls from the sky,
+     * bursts on the ground, and the mascot grows out of the flash.
+     */
+    private void playIntro(Mascot m) {
+        if (!getConfig().getBoolean("mascot.intro.enabled", true) || m.body == null || !m.body.isValid()) return;
+        final Location ground = m.body.getLocation().clone();
+        final World w = ground.getWorld();
+        if (w == null) return;
+        final double top = ground.getY() + 12.0;
+        final double fullScale = mascotScale();
+        final int rgb = m.rgb;
+        m.introHideUntil = System.currentTimeMillis() + 800L;
+        AttributeInstance sc0 = m.body.getAttribute(Attribute.SCALE);
+        if (sc0 != null) sc0.setBaseValue(fullScale * 0.05);
+        Player owner = Bukkit.getPlayer(m.owner);
+        if (owner != null && getConfig().getBoolean("mascot.intro.title", true)) {
+            owner.showTitle(net.kyori.adventure.title.Title.title(
+                    Component.text("Your chat mascot has arrived!", TextColor.color(rgb)),
+                    Component.text("Your Twitch chat shows up next to you", NamedTextColor.GRAY)));
+        }
+        if (getConfig().getBoolean("mascot.intro.announce", false)) {
+            Bukkit.broadcast(Component.text(streamerName(m.owner) + "'s chat mascot has arrived!", TextColor.color(rgb)));
+        }
+        new org.bukkit.scheduler.BukkitRunnable() {
+            int t = 0;
+
+            @Override
+            public void run() {
+                if (m.body == null || !m.body.isValid()) {
+                    cancel();
+                    return;
+                }
+                Location at = m.body.getLocation();
+                if (t < 16) { // the beam falls
+                    double y = top - (top - ground.getY()) * (t / 15.0);
+                    w.spawnParticle(Particle.END_ROD, at.getX(), y, at.getZ(), 8, 0.06, 0.4, 0.06, 0.0);
+                    w.spawnParticle(Particle.END_ROD, at.getX(), y + 1.5, at.getZ(), 3, 0.03, 0.8, 0.03, 0.0);
+                    if (t == 0) {
+                        w.playSound(at, Sound.BLOCK_AMETHYST_BLOCK_CHIME, SoundCategory.NEUTRAL, sfx("intro", 1f), 0.8f);
+                    }
+                } else if (t == 16) { // the burst
+                    for (int i = 0; i < 28; i++) {
+                        double a = Math.PI * 2 * i / 28.0;
+                        w.spawnParticle(Particle.END_ROD, at.getX(), at.getY() + 0.2, at.getZ(), 0,
+                                Math.cos(a), 0.05, Math.sin(a), 0.25);
+                    }
+                    w.spawnParticle(Particle.FIREWORK, at.clone().add(0, 0.8, 0), 60, 0.3, 0.6, 0.3, 0.12);
+                    w.spawnParticle(Particle.TOTEM_OF_UNDYING, at.clone().add(0, 0.8, 0), 30, 0.3, 0.6, 0.3, 0.3);
+                    w.playSound(at, Sound.ENTITY_PLAYER_LEVELUP, SoundCategory.NEUTRAL, sfx("intro", 0.8f), 1.4f);
+                    w.playSound(at, Sound.BLOCK_AMETHYST_BLOCK_RESONATE, SoundCategory.NEUTRAL, sfx("intro", 1f), 1.2f);
+                } else if (t <= 32) { // it grows out of the flash, with a little spiral
+                    double f = Math.min(1.0, (t - 16) / 14.0);
+                    f = 1 - Math.pow(1 - f, 3); // eases out
+                    AttributeInstance sc = m.body.getAttribute(Attribute.SCALE);
+                    if (sc != null) sc.setBaseValue(fullScale * Math.max(0.05, f));
+                    double a = (t - 16) * 0.9;
+                    for (int k = 0; k < 2; k++) {
+                        double aa = a + k * Math.PI;
+                        w.spawnParticle(Particle.END_ROD, at.getX() + Math.cos(aa) * 0.6,
+                                at.getY() + (t - 16) * 0.09, at.getZ() + Math.sin(aa) * 0.6, 1, 0, 0, 0, 0);
+                    }
+                } else {
+                    AttributeInstance sc = m.body.getAttribute(Attribute.SCALE);
+                    if (sc != null) sc.setBaseValue(fullScale);
+                    cancel();
+                    return;
+                }
+                t++;
+            }
+        }.runTaskTimer(this, 0L, 1L);
     }
 
     private Mascot createMascot(UUID id, Location base) {
@@ -3245,6 +3348,20 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         UUID id = p.getUniqueId();
         String action = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "toggle";
+
+        if (action.equals("intro")) { // staff: replay the entrance on your own mascot
+            if (!p.hasPermission("livetag.admin")) {
+                p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+                return;
+            }
+            Mascot im = mascots.get(id);
+            if (im == null || im.isGrave || !im.valid()) {
+                p.sendMessage(Component.text("You have no mascot out right now (try /live mascot preview).", NamedTextColor.RED));
+                return;
+            }
+            playIntro(im);
+            return;
+        }
 
         if (action.equals("baby")) { // staff test: a baby of you and yourself
             if (!p.hasPermission("livetag.admin")) {
