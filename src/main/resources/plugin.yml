@@ -13,9 +13,8 @@ commands:
     description: Shows every linked streamer, their Twitch and whether they are live
     usage: /streamers
   mascot:
-    description: Staff tools for chat mascots (locate)
-    usage: /mascot locate [player]
-    permission: livetag.admin
+    description: Find your mascot's grave (staff can also locate any mascot)
+    usage: /mascot grave
 permissions:
   livetag.use:
     description: Allows toggling the LIVE tag and using the mascot commands

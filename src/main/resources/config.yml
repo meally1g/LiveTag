@@ -139,6 +139,9 @@ mascot:
     head-height: 0.4   # how far above the ground the head is
     head-scale: 1.0    # size of the head
 
+  # A mascot cannot be hurt by anything for this many seconds after it appears (first stream, rebirth, joining).
+  spawn-protection-seconds: 15
+
   # The sounds the mascot makes (any Minecraft sound name). These are the copper golem's.
   sound-names:
     hit: entity.copper_golem.hurt
@@ -268,4 +271,4 @@ mascot:
     # bring the mascot back is to take revenge. Turn off if you hand out heads another way.
     killer-head-drops: true
     announce: true          # tell everyone in chat when it is reborn
-    thank-seconds: 4        # after it is revived it crouches this long, facing whoever revived it, then goes to its owner
+    thank-seconds: 10       # after it is revived it crouches this long, facing whoever revived it, then goes to its owner
