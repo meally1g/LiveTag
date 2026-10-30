@@ -608,9 +608,32 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return accessToken;
     }
 
+    /**
+     * A streamer who goes live (or joins while live) gets their mascot back by their side:
+     * it stops staying, switches back on if it was off, and jumps to them.
+     */
+    private void summonMascot(UUID id) {
+        if (!getConfig().getBoolean("mascot.come-when-live", true)) return;
+        if (deadSince.containsKey(id)) return; // a dead mascot stays in its grave
+        Player p = Bukkit.getPlayer(id);
+        if (p == null) return;
+        boolean changed = stay.remove(id);
+        homes.remove(id);
+        changed |= mascotOff.remove(id);
+        if (changed) saveData();
+        Mascot m = mascots.get(id);
+        if (m == null || m.isGrave || !m.valid() || m.leashProxy != null) return; // a missing one spawns next to them on its own
+        Location to = mascotLocation(p);
+        if (m.body.getWorld() == to.getWorld() && m.body.getLocation().distanceSquared(to) < 9.0) return; // already close
+        m.body.teleport(to);
+        if (m.board != null && m.board.isValid()) m.board.teleport(to.clone().add(0, boardHeight(), 0));
+        to.getWorld().spawnParticle(Particle.POOF, to.clone().add(0, 1, 0), 12, 0.3, 0.5, 0.3, 0.02);
+    }
+
     /** Back on the main thread: update tags for anyone whose live state changed. */
     private void applyTwitchResults(Set<String> liveLogins) {
         boolean announce = getConfig().getBoolean("twitch.announce", false) && firstPollDone;
+        boolean firstStream = false;
         for (Map.Entry<UUID, String> en : links.entrySet()) {
             UUID id = en.getKey();
             boolean nowLive = liveLogins.contains(en.getValue());
@@ -623,9 +646,19 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
             if (nowLive) {
                 twitchLive.add(id);
+                summonMascot(id);
                 if (idleDead.contains(id)) reviveMascot(id, "because its streamer went live again!");
                 if (streamed.add(id)) { // their very first stream
                     dataDirty = true;
+                    // make sure the mascot really shows up next to them, with no commands needed
+                    colorFor(id); // random colour no other streamer has (unless staff already chose one)
+                    firstStream = true;
+                    mascotOff.remove(id);
+                    stay.remove(id);
+                    homes.remove(id);
+                    lastLive.put(id, System.currentTimeMillis());
+                    Mascot stale = mascots.remove(id);
+                    if (stale != null) discard(stale);
                     Player first = Bukkit.getPlayer(id);
                     if (first != null) {
                         first.sendMessage(Component.text(
@@ -642,6 +675,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (nowLive && announce) announceLive(id, en.getValue());
         }
         firstPollDone = true;
+        if (firstStream) tickMascots(); // spawn it right away instead of waiting for the next tick
     }
 
     private void announceLive(UUID id, String login) {
@@ -663,6 +697,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             apply(p, true);
             // give the TAB plugin a moment to load the player first
             Bukkit.getScheduler().runTaskLater(this, () -> syncTabPlugin(p, true), 40L);
+        }
+        if (twitchLive.contains(p.getUniqueId())) {
+            Bukkit.getScheduler().runTaskLater(this, () -> summonMascot(p.getUniqueId()), 40L);
         }
     }
 
@@ -836,7 +873,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         String previous = links.put(id, login);
         twitchLive.remove(id);
         if (!login.equals(previous)) streamed.remove(id); // a different channel has to stream first
-        colorFor(id);
+        // the colour is picked at random on their first stream (or by staff with /live mascot color)
         saveData();
         sender.sendMessage(Component.text("Linked " + target.getName() + " to twitch.tv/" + login
                 + ". Live status is checked every "
@@ -944,6 +981,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Location walkGoal; // where it is currently walking to (null = not walking)
         int stuck;
         long lastRegenFx;
+        long lastSound;
         boolean leather = true; // wearing the default coloured leather outfit (no coloured skin)
         long lastDamage;
         long lastRegen;
@@ -1058,7 +1096,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     /** Chat board height, shrunk together with the mascot. */
     private double boardHeight() {
-        return getConfig().getDouble("mascot.board-height", 2.4) * mascotScale();
+        return getConfig().getDouble("mascot.board-height", 3.0) * mascotScale();
     }
 
     private double maxHp() {
@@ -1242,7 +1280,30 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         for (Mascot m : mascots.values()) {
             if (!m.isGrave && m.login != null && m.login.equals(msg.channel())) {
                 addLine(m, bubbleLine(name, text, m.rgb), now + ttl, max);
+                playChatSound(m, text, now);
             }
+        }
+    }
+
+    /** A chat message containing a keyword (like "creeper") makes the mascot play that sound. */
+    private void playChatSound(Mascot m, String text, long now) {
+        ConfigurationSection cs = getConfig().getConfigurationSection("mascot.chat-sounds");
+        if (cs == null || !cs.getBoolean("enabled", true) || m.body == null || !m.body.isValid()) return;
+        long cooldown = (long) (cs.getDouble("cooldown-seconds", 3.0) * 1000L);
+        if (now - m.lastSound < cooldown) return;
+        ConfigurationSection map = cs.getConfigurationSection("sounds");
+        if (map == null) return;
+        for (String word : map.getKeys(false)) {
+            String sound = map.getString(word);
+            if (sound == null || sound.isBlank()) continue;
+            if (!Pattern.compile("(?<![\\p{L}\\p{N}])" + Pattern.quote(word.toLowerCase(Locale.ROOT))
+                    + "(?![\\p{L}\\p{N}])").matcher(text.toLowerCase(Locale.ROOT)).find()) continue;
+            m.lastSound = now;
+            float vol = (float) cs.getDouble("volume", 1.0);
+            float pitch = (float) cs.getDouble("pitch", 1.0);
+            m.body.getWorld().playSound(m.body.getLocation(), sound.trim(),
+                    org.bukkit.SoundCategory.NEUTRAL, vol, pitch);
+            return;
         }
     }
 
