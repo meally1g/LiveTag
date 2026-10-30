@@ -99,6 +99,7 @@ import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -168,6 +169,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private final Map<UUID, Mascot> babyMascots = new HashMap<>();
     private final Set<UUID> babyChatOff = new HashSet<>();
     private final Set<UUID> babyStay = new HashSet<>();
+    private final Map<String, String> pendingLinks = new HashMap<>(); // Minecraft name (lower case) -> twitch login, applied when they first join
     private final Set<UUID> introPending = new HashSet<>(); // streamers whose mascot gets its big entrance
     private final Map<UUID, Double> babyHp = new HashMap<>();
     private final Map<UUID, Long> inLove = new HashMap<>(); // streamer -> until when their mascot is in love
@@ -205,6 +207,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
     }
 
+    /** Marker for the /streamers list. */
+    private static class StreamersHolder implements InventoryHolder {
+        @Override
+        public @NotNull Inventory getInventory() {
+            throw new UnsupportedOperationException();
+        }
+    }
+
     // ------------------------------------------------------------ lifecycle
 
     /** The plugin used to be called LiveTag: take over its config and data on the first start as ChatMate. */
@@ -236,6 +246,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("live").setExecutor(this);
         getCommand("live").setTabCompleter(this);
+        if (getCommand("mascot") != null) {
+            getCommand("mascot").setExecutor(this);
+            getCommand("mascot").setTabCompleter(this);
+        }
+        if (getCommand("streamers") != null) {
+            getCommand("streamers").setExecutor(this);
+            getCommand("streamers").setTabCompleter(this);
+        }
 
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (shouldShow(p.getUniqueId())) apply(p, true);
@@ -413,6 +431,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 }
             }
         }
+        ConfigurationSection pend = yml.getConfigurationSection("pending-links");
+        if (pend != null) {
+            for (String key : pend.getKeys(false)) pendingLinks.put(key.toLowerCase(Locale.ROOT), pend.getString(key, ""));
+        }
         ConfigurationSection sec = yml.getConfigurationSection("links");
         if (sec != null) {
             for (String key : sec.getKeys(false)) {
@@ -433,6 +455,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         yml.set("live", live.stream().map(UUID::toString).toList());
         for (Map.Entry<UUID, String> en : links.entrySet()) {
             yml.set("links." + en.getKey(), en.getValue());
+        }
+        for (Map.Entry<String, String> pl : pendingLinks.entrySet()) {
+            yml.set("pending-links." + pl.getKey(), pl.getValue());
         }
         yml.set("mascot-off", mascotOff.stream().map(UUID::toString).toList());
         yml.set("stay", stay.stream().map(UUID::toString).toList());
@@ -774,6 +799,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
+        String waiting = pendingLinks.remove(p.getName().toLowerCase(Locale.ROOT));
+        if (waiting != null && LOGIN_RULE.matcher(waiting).matches()) {
+            String previous = links.put(p.getUniqueId(), waiting);
+            if (!waiting.equals(previous)) streamed.remove(p.getUniqueId());
+            saveData();
+            Bukkit.getScheduler().runTaskAsynchronously(this, this::pollTwitch);
+            getLogger().info("Linked " + p.getName() + " to twitch.tv/" + waiting + " (set up before they joined).");
+        }
         if (shouldShow(p.getUniqueId())) {
             apply(p, true);
             // give the TAB plugin a moment to load the player first
@@ -833,6 +866,181 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return item;
     }
 
+    // ------------------------------------------------------------ /mascot locate
+
+    private Component locLine(String label, Location loc) {
+        World w = loc.getWorld();
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+        String world = w == null ? "?" : w.getKey().asString();
+        Component where = Component.text(world + "  " + x + " " + y + " " + z, NamedTextColor.AQUA)
+                .decoration(TextDecoration.UNDERLINED, true)
+                .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
+                        Component.text("Click to teleport there", NamedTextColor.YELLOW)));
+        if (w != null) {
+            where = where.clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand(
+                    "/execute in " + world + " run tp @s " + x + " " + y + " " + z));
+        }
+        return Component.text(label + "  ", NamedTextColor.GRAY).append(where);
+    }
+
+    /** /mascot locate [player]  (staff): where is somebody's mascot? Clickable coordinates. */
+    private void mascotLocate(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("livetag.admin")) {
+            sender.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+            return;
+        }
+        if (args.length < 1 || !args[0].equalsIgnoreCase("locate")) {
+            sender.sendMessage(Component.text("Usage: /mascot locate [player]", NamedTextColor.YELLOW));
+            return;
+        }
+        Set<UUID> who = new LinkedHashSet<>();
+        if (args.length >= 2) {
+            OfflinePlayer t = Bukkit.getOfflinePlayerIfCached(args[1]);
+            if (t == null) {
+                sender.sendMessage(Component.text("Unknown player '" + args[1] + "'.", NamedTextColor.RED));
+                return;
+            }
+            who.add(t.getUniqueId());
+        } else {
+            who.addAll(mascots.keySet());
+            who.addAll(graves.keySet());
+        }
+        int found = 0;
+        for (UUID id : who) {
+            String name = Bukkit.getOfflinePlayer(id).getName();
+            if (name == null) name = id.toString().substring(0, 8);
+            Mascot m = mascots.get(id);
+            Location loc = null;
+            String kind = "mascot";
+            if (m != null && m.valid()) {
+                if (m.isGrave) {
+                    kind = "grave";
+                    if (m.tomb != null) loc = m.tomb.getLocation();
+                } else if (m.body != null) {
+                    loc = m.body.getLocation();
+                }
+            }
+            if (loc == null && deadSince.containsKey(id) && graves.get(id) != null) {
+                loc = graves.get(id).toLocation();
+                kind = "grave";
+            }
+            if (loc == null && stay.contains(id) && homes.get(id) != null) {
+                loc = homes.get(id).toLocation();
+                kind = "staying spot (not spawned right now)";
+            }
+            if (loc != null && loc.getWorld() != null) {
+                sender.sendMessage(locLine(name + " - " + kind + ":", loc));
+                found++;
+            } else if (args.length >= 2) {
+                Player online = Bukkit.getPlayer(id);
+                sender.sendMessage(Component.text(name + " has no mascot out right now"
+                        + (links.containsKey(id) ? "" : " (not linked to Twitch)")
+                        + (online == null ? " - the owner is offline." : "."), NamedTextColor.GRAY));
+                found++;
+            }
+        }
+        for (Baby b : babies.values()) {
+            if (args.length >= 2 && !who.contains(b.a()) && !who.contains(b.b())) continue;
+            Mascot bm = babyMascots.get(b.id());
+            if (bm != null && bm.body != null && bm.body.isValid()) {
+                sender.sendMessage(locLine("Baby of " + streamerName(b.a()) + " + " + streamerName(b.b()) + ":",
+                        bm.body.getLocation()));
+                found++;
+            }
+        }
+        if (found == 0) sender.sendMessage(Component.text("No mascots found.", NamedTextColor.GRAY));
+    }
+
+    // ------------------------------------------------------------ /streamers
+
+    private static String ago(long ms) {
+        long min = Math.max(1, ms / 60_000L);
+        if (min < 60) return min + " min ago";
+        long h = min / 60;
+        if (h < 48) return h + " h ago";
+        return (h / 24) + " days ago";
+    }
+
+    /** A list of every linked streamer: their head, their Twitch, and a dot that is red while they are live. */
+    private void openStreamers(Player viewer) {
+        List<UUID> ids = new ArrayList<>(links.keySet());
+        Map<UUID, String> names = new HashMap<>();
+        for (UUID id : ids) {
+            String n = Bukkit.getOfflinePlayer(id).getName();
+            names.put(id, n == null ? "Unknown" : n);
+        }
+        ids.sort((x, y) -> {
+            boolean lx = twitchLive.contains(x);
+            boolean ly = twitchLive.contains(y);
+            if (lx != ly) return lx ? -1 : 1; // live streamers first
+            return names.get(x).compareToIgnoreCase(names.get(y));
+        });
+        int shown = Math.min(ids.size(), 54);
+        int rows = Math.max(1, (shown + 8) / 9);
+        long liveCount = ids.stream().filter(twitchLive::contains).count();
+        Inventory inv = Bukkit.createInventory(new StreamersHolder(), rows * 9,
+                Component.text("Streamers  ", NamedTextColor.DARK_PURPLE)
+                        .append(Component.text("\u25CF " + liveCount + " live", NamedTextColor.RED)));
+        long now = System.currentTimeMillis();
+        for (int i = 0; i < shown; i++) {
+            UUID id = ids.get(i);
+            String login = links.get(id);
+            boolean live = twitchLive.contains(id);
+            ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+            SkullMeta meta = (SkullMeta) head.getItemMeta();
+            meta.setOwningPlayer(Bukkit.getOfflinePlayer(id));
+            meta.displayName(Component.text("\u25CF ", live ? NamedTextColor.RED : NamedTextColor.DARK_GRAY)
+                    .append(Component.text(names.get(id), NamedTextColor.WHITE))
+                    .decoration(TextDecoration.ITALIC, false));
+            List<Component> lore = new ArrayList<>();
+            String display = twitchNames.getOrDefault(login.toLowerCase(Locale.ROOT), login);
+            lore.add(Component.text("Twitch: ", NamedTextColor.GRAY)
+                    .append(Component.text(display, NamedTextColor.LIGHT_PURPLE))
+                    .decoration(TextDecoration.ITALIC, false));
+            lore.add(live
+                    ? Component.text("LIVE now", NamedTextColor.RED).decoration(TextDecoration.ITALIC, false)
+                    : Component.text("Offline", NamedTextColor.GRAY).decoration(TextDecoration.ITALIC, false));
+            Long seen = lastLive.get(id);
+            if (!live && seen != null) {
+                lore.add(Component.text("Last live " + ago(now - seen), NamedTextColor.DARK_GRAY)
+                        .decoration(TextDecoration.ITALIC, false));
+            }
+            lore.add(Component.empty());
+            lore.add(Component.text("Click for the channel link", NamedTextColor.YELLOW)
+                    .decoration(TextDecoration.ITALIC, false));
+            meta.lore(lore);
+            head.setItemMeta(meta);
+            inv.setItem(i, head);
+        }
+        viewer.openInventory(inv);
+    }
+
+    @EventHandler
+    public void onStreamersClick(InventoryClickEvent e) {
+        if (!(e.getView().getTopInventory().getHolder(false) instanceof StreamersHolder)) return;
+        e.setCancelled(true);
+        if (!(e.getWhoClicked() instanceof Player p)) return;
+        if (e.getRawSlot() < 0 || e.getRawSlot() >= e.getView().getTopInventory().getSize()) return;
+        ItemStack it = e.getCurrentItem();
+        if (it == null || it.getType() != Material.PLAYER_HEAD || !(it.getItemMeta() instanceof SkullMeta sm)) return;
+        OfflinePlayer owner = sm.getOwningPlayer();
+        String login = owner == null ? null : links.get(owner.getUniqueId());
+        if (login == null) return;
+        p.closeInventory();
+        String url = "https://twitch.tv/" + login;
+        p.sendMessage(Component.text("Twitch: ", NamedTextColor.GRAY)
+                .append(Component.text(url, NamedTextColor.LIGHT_PURPLE)
+                        .decoration(TextDecoration.UNDERLINED, true)
+                        .clickEvent(net.kyori.adventure.text.event.ClickEvent.openUrl(url))));
+    }
+
+    @EventHandler
+    public void onStreamersDrag(org.bukkit.event.inventory.InventoryDragEvent e) {
+        if (e.getView().getTopInventory().getHolder(false) instanceof StreamersHolder) e.setCancelled(true);
+    }
+
     private void openMenu(Player p) {
         Inventory inv = Bukkit.createInventory(new MenuHolder(), 27,
                 Component.text("Stream Tag", NamedTextColor.DARK_PURPLE));
@@ -846,6 +1054,18 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command cmd,
                              @NotNull String label, @NotNull String[] args) {
+        if (cmd.getName().equalsIgnoreCase("mascot")) {
+            mascotLocate(sender, args);
+            return true;
+        }
+        if (cmd.getName().equalsIgnoreCase("streamers")) {
+            if (sender instanceof Player viewer) {
+                openStreamers(viewer);
+            } else {
+                sender.sendMessage("Players only.");
+            }
+            return true;
+        }
         String sub = args.length > 0 ? args[0].toLowerCase(Locale.ROOT) : "toggle";
 
         if (sub.equals("reload")) {
@@ -922,9 +1142,16 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
             target = Bukkit.getOfflinePlayerIfCached(args[1]);
             login = args[2];
-            if (target == null) {
-                sender.sendMessage(Component.text("Unknown player '" + args[1]
-                        + "' - they must have joined the server before.", NamedTextColor.RED));
+            if (target == null) { // never joined: remember the link and apply it when they first join
+                if (!LOGIN_RULE.matcher(login).matches() || !args[1].matches("[A-Za-z0-9_.]{1,16}")) {
+                    sender.sendMessage(Component.text("That doesn't look like a valid Minecraft or Twitch name.",
+                            NamedTextColor.RED));
+                    return;
+                }
+                pendingLinks.put(args[1].toLowerCase(Locale.ROOT), login.toLowerCase(Locale.ROOT));
+                saveData();
+                sender.sendMessage(Component.text(args[1] + " hasn't joined yet. They will be linked to twitch.tv/"
+                        + login.toLowerCase(Locale.ROOT) + " the moment they first join.", NamedTextColor.GREEN));
                 return;
             }
         } else if (args.length == 2 && sender instanceof Player self) {
@@ -976,7 +1203,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
             target = Bukkit.getOfflinePlayerIfCached(args[1]);
             if (target == null) {
-                sender.sendMessage(Component.text("Unknown player '" + args[1] + "'.", NamedTextColor.RED));
+                if (pendingLinks.remove(args[1].toLowerCase(Locale.ROOT)) != null) {
+                    saveData();
+                    sender.sendMessage(Component.text("Removed the waiting link for " + args[1] + ".", NamedTextColor.GREEN));
+                } else {
+                    sender.sendMessage(Component.text("Unknown player '" + args[1] + "'.", NamedTextColor.RED));
+                }
                 return;
             }
         } else if (sender instanceof Player self) {
@@ -1010,6 +1242,20 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     @Override
     public List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command cmd,
                                       @NotNull String alias, @NotNull String[] args) {
+        if (cmd.getName().equalsIgnoreCase("streamers")) return List.of();
+        if (cmd.getName().equalsIgnoreCase("mascot")) {
+            if (!sender.hasPermission("livetag.admin")) return List.of();
+            if (args.length == 1) return List.of("locate");
+            if (args.length == 2) {
+                List<String> out = new ArrayList<>();
+                for (UUID id : links.keySet()) {
+                    String n = Bukkit.getOfflinePlayer(id).getName();
+                    if (n != null && n.toLowerCase(Locale.ROOT).startsWith(args[1].toLowerCase(Locale.ROOT))) out.add(n);
+                }
+                return out;
+            }
+            return List.of();
+        }
         if (args.length == 1) {
             List<String> subs = new ArrayList<>(List.of("menu", "on", "off", "status"));
             subs.add("link");
@@ -1070,8 +1316,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         int seekTicks; // how long it has been trying to reach a ladder
         long jumpHeldSince; // when the owner started holding the jump key
         long sneakSince; // when the owner started crouching
+        boolean airborne; // for the jump and landing sounds
+        double stride; // distance walked since its last step sound
+        long nextIdle; // when it may play an idle sound again
+        boolean berserk; // low health: attacks everybody
+        long lastAttack;
+        long lastFireHit; // fire and lava only hurt every half second, like in vanilla
         long introHideUntil; // entrance animation: name and chat stay hidden until then
-        int lastLineCount; // lines on the board at the last render (for the scroll animation)
         float fade = 1f; // 1 = name and chat fully shown, 0 = faded out
         boolean wantHidden; // the owner has been crouching long enough: fade out
         boolean nameShown = true;
@@ -1388,6 +1639,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 boolean staying = leashed == null && stay.contains(id);
                 m.walkGoal = leashed != null ? leashed : staying ? target : p.getLocation();
                 m.stopDist = staying ? 0.3 : getConfig().getDouble("mascot.follow-distance", 2.5);
+                berserk(m, id, now);
             } else {
                 m.walkGoal = null;
                 moveMascot(m, target);
@@ -1574,36 +1826,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (m.lines.isEmpty()) {
             m.board.text(Component.empty());
             m.board.setViewRange(0f); // hide the empty board
-            m.lastLineCount = 0;
             return;
         }
         List<Component> parts = new ArrayList<>();
         for (Mascot.Line l : m.lines) parts.add(l.text());
         m.board.text(Component.join(JoinConfiguration.newlines(), parts));
         m.board.setViewRange(m.fade < 0.12f ? 0f : 1f);
-        int delta = m.lines.size() - m.lastLineCount;
-        m.lastLineCount = m.lines.size();
-        scrollBoard(m, delta);
-    }
-
-    /** Chat scroll animation: the board starts a little off and glides into place when lines come or go. */
-    private void scrollBoard(Mascot m, int delta) {
-        int ticks = getConfig().getInt("mascot.chat-scroll-ticks", 6);
-        if (ticks <= 0 || delta == 0 || m.board == null || !m.board.isValid()) return;
-        final TextDisplay board = m.board;
-        float bs = (float) Math.max(0.2, getConfig().getDouble("mascot.board-scale", 0.6));
-        float off = -0.2f * bs * Math.max(-3, Math.min(3, delta)); // a new line pushes the others up
-        board.setInterpolationDuration(0);
-        board.setInterpolationDelay(0);
-        board.setTransformation(new Transformation(new Vector3f(0, off, 0), new AxisAngle4f(),
-                new Vector3f(bs, bs, bs), new AxisAngle4f()));
-        Bukkit.getScheduler().runTask(this, () -> {
-            if (!board.isValid()) return;
-            board.setInterpolationDuration(ticks);
-            board.setInterpolationDelay(0);
-            board.setTransformation(new Transformation(new Vector3f(0, 0, 0), new AxisAngle4f(),
-                    new Vector3f(bs, bs, bs), new AxisAngle4f()));
-        });
     }
 
     private Location mascotLocation(Player p) {
@@ -1633,7 +1861,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         m.nameDirty = true;
         dataDirty = true;
         m.body.playHurtAnimation(0f);
-        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, sfx("hurt", 1f), 1f);
+        m.body.getWorld().playSound(m.body.getLocation(), soundName("hit", "entity.copper_golem.hurt"), SoundCategory.PLAYERS, sfx("hurt", 1f), 1f);
         if (left <= 0) killMascot(m, null, why);
         else hpMap.put(id, left);
     }
@@ -1931,6 +2159,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 if (!snapped && next.distanceSquared(cur) < 1.0E-6 && Math.abs(next.getYaw() - cur.getYaw()) < 2f
                         && Math.abs(next.getPitch() - cur.getPitch()) < 2f) continue;
             }
+            stepSounds(m, cur, next);
             m.body.teleport(next);
             if (m.board != null && m.board.isValid()) m.board.teleport(next.clone().add(0, boardHeight * m.sizeFactor, 0));
             if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(next.clone().add(0, 0.8, 0));
@@ -1973,6 +2202,88 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         next.setYaw(yaw);
         next.setPitch(pitch);
+    }
+
+    /** Below a few hearts the mascot goes berserk and attacks the nearest player - its owner included. */
+    private void berserk(Mascot m, UUID id, long now) {
+        double hearts = getConfig().getDouble("mascot.berserk-below-hearts", 4.0);
+        if (hearts <= 0 || hp(id) >= hearts * 2.0 || m.isGrave || m.body == null) {
+            m.berserk = false;
+            return;
+        }
+        double range = getConfig().getDouble("mascot.berserk-range", 16.0);
+        boolean hitOwner = getConfig().getBoolean("mascot.berserk-attacks-owner", false);
+        Player target = null;
+        double best = range * range;
+        for (Player pl : m.body.getWorld().getPlayers()) {
+            if (pl.getGameMode() == org.bukkit.GameMode.SPECTATOR) continue;
+            if (!hitOwner && pl.getUniqueId().equals(id)) continue; // spares its owner
+            double d2 = pl.getLocation().distanceSquared(m.body.getLocation());
+            if (d2 < best) {
+                best = d2;
+                target = pl;
+            }
+        }
+        if (!m.berserk) {
+            m.berserk = true;
+        }
+        if (target == null) return;
+        m.walkGoal = target.getLocation();
+        m.stopDist = 1.0;
+        Location head = m.body.getLocation().add(0, 1.5 * mascotScale() + 0.3, 0);
+        m.body.getWorld().spawnParticle(Particle.ANGRY_VILLAGER, head, 1, 0.15, 0.1, 0.15, 0);
+        long cooldown = (long) (getConfig().getDouble("mascot.berserk-cooldown-seconds", 1.0) * 1000L);
+        if (Math.sqrt(best) <= 2.2 && now - m.lastAttack >= cooldown) {
+            m.lastAttack = now;
+            m.body.swingMainHand();
+            target.damage(getConfig().getDouble("mascot.berserk-damage", 2.0), m.body);
+        }
+    }
+
+    private String soundName(String key, String def) {
+        return getConfig().getString("mascot.sound-names." + key, def);
+    }
+
+    /** Copper-golem footsteps while walking, on jumping and landing, and now and then an idle sound. */
+    private void stepSounds(Mascot m, Location cur, Location next) {
+        World w = next.getWorld();
+        if (w == null || m.isGrave) return;
+        double dx = next.getX() - cur.getX();
+        double dz = next.getZ() - cur.getZ();
+        double dy = next.getY() - cur.getY();
+        boolean air = Math.abs(dy) > 0.03;
+        float pitchBase = m.baby ? 1.4f : 1.0f;
+        float stepVol = sfx("steps", 0.6f);
+        String step = soundName("step", "entity.copper_golem.step");
+        if (stepVol > 0f) {
+            if (air && !m.airborne) {
+                w.playSound(next, step, SoundCategory.NEUTRAL, stepVol, pitchBase * 1.25f); // jump
+            } else if (!air && m.airborne) {
+                w.playSound(next, step, SoundCategory.NEUTRAL, stepVol, pitchBase * 0.8f); // landing
+            }
+            if (!air) {
+                m.stride += Math.hypot(dx, dz);
+                if (m.stride >= 1.3) {
+                    m.stride = 0;
+                    w.playSound(next, step, SoundCategory.NEUTRAL, stepVol,
+                            pitchBase * (0.95f + ThreadLocalRandom.current().nextFloat() * 0.1f));
+                }
+            } else {
+                m.stride = 0;
+            }
+        }
+        m.airborne = air;
+        // idle sound while standing still
+        long nowMs = System.currentTimeMillis();
+        if (!air && Math.hypot(dx, dz) < 0.01) {
+            if (m.nextIdle == 0) {
+                m.nextIdle = nowMs + 20_000L + ThreadLocalRandom.current().nextLong(40_000L);
+            } else if (nowMs >= m.nextIdle) {
+                m.nextIdle = nowMs + 25_000L + ThreadLocalRandom.current().nextLong(50_000L);
+                float iv = sfx("idle", 0.7f);
+                if (iv > 0f) w.playSound(next, soundName("idle", "entity.copper_golem.spin"), SoundCategory.NEUTRAL, iv, pitchBase);
+            }
+        }
     }
 
     /** Fades the name and the chat out while the owner crouches for a while, and back in afterwards. */
@@ -2065,20 +2376,17 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         final Location ground = m.body.getLocation().clone();
         final World w = ground.getWorld();
         if (w == null) return;
-        final double top = ground.getY() + 12.0;
+        final int charge = 200; // ticks of build-up (10 s)
+        final int beam = charge + 20; // the beam falls (1 s)
+        final int grow = beam + 22; // it grows out of the flash
+        final double top = ground.getY() + 14.0;
         final double fullScale = mascotScale();
-        final int rgb = m.rgb;
-        m.introHideUntil = System.currentTimeMillis() + 800L;
+        m.introHideUntil = System.currentTimeMillis() + beam * 50L + 100L;
         AttributeInstance sc0 = m.body.getAttribute(Attribute.SCALE);
-        if (sc0 != null) sc0.setBaseValue(fullScale * 0.05);
-        Player owner = Bukkit.getPlayer(m.owner);
-        if (owner != null && getConfig().getBoolean("mascot.intro.title", true)) {
-            owner.showTitle(net.kyori.adventure.title.Title.title(
-                    Component.text("Your chat mascot has arrived!", TextColor.color(rgb)),
-                    Component.text("Your Twitch chat shows up next to you", NamedTextColor.GRAY)));
-        }
+        if (sc0 != null) sc0.setBaseValue(0.0625);
         if (getConfig().getBoolean("mascot.intro.announce", false)) {
-            Bukkit.broadcast(Component.text(streamerName(m.owner) + "'s chat mascot has arrived!", TextColor.color(rgb)));
+            Bukkit.broadcast(Component.text(streamerName(m.owner) + "'s chat mascot is arriving...",
+                    TextColor.color(m.rgb)));
         }
         new org.bukkit.scheduler.BukkitRunnable() {
             int t = 0;
@@ -2090,33 +2398,54 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     return;
                 }
                 Location at = m.body.getLocation();
-                if (t < 16) { // the beam falls
-                    double y = top - (top - ground.getY()) * (t / 15.0);
-                    w.spawnParticle(Particle.END_ROD, at.getX(), y, at.getZ(), 8, 0.06, 0.4, 0.06, 0.0);
-                    w.spawnParticle(Particle.END_ROD, at.getX(), y + 1.5, at.getZ(), 3, 0.03, 0.8, 0.03, 0.0);
-                    if (t == 0) {
-                        w.playSound(at, Sound.BLOCK_AMETHYST_BLOCK_CHIME, SoundCategory.NEUTRAL, sfx("intro", 1f), 0.8f);
+                if (t < charge) { // build-up: light spirals in and rises, with chimes that climb in pitch
+                    double p = t / (double) charge;
+                    double radius = 2.6 - 2.0 * p;
+                    for (int arm = 0; arm < 3; arm++) {
+                        double a = t * 0.35 + arm * Math.PI * 2 / 3;
+                        double y = at.getY() + 0.1 + 2.2 * ((t * 0.04 + arm * 0.33) % 1.0);
+                        w.spawnParticle(Particle.END_ROD, at.getX() + Math.cos(a) * radius, y,
+                                at.getZ() + Math.sin(a) * radius, 1, 0, 0, 0, 0);
                     }
-                } else if (t == 16) { // the burst
-                    for (int i = 0; i < 28; i++) {
-                        double a = Math.PI * 2 * i / 28.0;
+                    if (t % 5 == 0) { // a ring on the ground that tightens
+                        for (int i = 0; i < 16; i++) {
+                            double a = Math.PI * 2 * i / 16.0;
+                            w.spawnParticle(Particle.END_ROD, at.getX() + Math.cos(a) * (radius + 0.4),
+                                    at.getY() + 0.05, at.getZ() + Math.sin(a) * (radius + 0.4), 0, 0, 0.02, 0, 0.0);
+                        }
+                    }
+                    if (t % 12 == 0) {
+                        w.playSound(at, Sound.BLOCK_AMETHYST_BLOCK_CHIME, SoundCategory.NEUTRAL,
+                                sfx("intro", 0.7f), (float) (0.6 + 1.0 * p));
+                    }
+                } else if (t < beam) { // the beam falls
+                    double p = (t - charge) / (double) (beam - charge - 1);
+                    double y = top - (top - ground.getY()) * p;
+                    w.spawnParticle(Particle.END_ROD, at.getX(), y, at.getZ(), 10, 0.07, 0.5, 0.07, 0.0);
+                    w.spawnParticle(Particle.END_ROD, at.getX(), y + 2, at.getZ(), 4, 0.04, 1.0, 0.04, 0.0);
+                    if (t == charge) {
+                        w.playSound(at, Sound.BLOCK_BEACON_ACTIVATE, SoundCategory.NEUTRAL, sfx("intro", 0.5f), 1.6f);
+                    }
+                } else if (t == beam) { // the burst
+                    for (int i = 0; i < 32; i++) {
+                        double a = Math.PI * 2 * i / 32.0;
                         w.spawnParticle(Particle.END_ROD, at.getX(), at.getY() + 0.2, at.getZ(), 0,
-                                Math.cos(a), 0.05, Math.sin(a), 0.25);
+                                Math.cos(a), 0.05, Math.sin(a), 0.3);
                     }
-                    w.spawnParticle(Particle.FIREWORK, at.clone().add(0, 0.8, 0), 60, 0.3, 0.6, 0.3, 0.12);
-                    w.spawnParticle(Particle.TOTEM_OF_UNDYING, at.clone().add(0, 0.8, 0), 30, 0.3, 0.6, 0.3, 0.3);
+                    w.spawnParticle(Particle.FIREWORK, at.clone().add(0, 0.8, 0), 70, 0.3, 0.6, 0.3, 0.14);
+                    w.spawnParticle(Particle.TOTEM_OF_UNDYING, at.clone().add(0, 0.8, 0), 35, 0.3, 0.6, 0.3, 0.3);
                     w.playSound(at, Sound.ENTITY_PLAYER_LEVELUP, SoundCategory.NEUTRAL, sfx("intro", 0.8f), 1.4f);
                     w.playSound(at, Sound.BLOCK_AMETHYST_BLOCK_RESONATE, SoundCategory.NEUTRAL, sfx("intro", 1f), 1.2f);
-                } else if (t <= 32) { // it grows out of the flash, with a little spiral
-                    double f = Math.min(1.0, (t - 16) / 14.0);
+                } else if (t <= grow) { // it grows out of the flash, with a little spiral
+                    double f = Math.min(1.0, (t - beam) / (double) (grow - beam));
                     f = 1 - Math.pow(1 - f, 3); // eases out
                     AttributeInstance sc = m.body.getAttribute(Attribute.SCALE);
-                    if (sc != null) sc.setBaseValue(fullScale * Math.max(0.05, f));
-                    double a = (t - 16) * 0.9;
+                    if (sc != null) sc.setBaseValue(Math.max(0.0625, fullScale * f));
+                    double a = (t - beam) * 0.9;
                     for (int k = 0; k < 2; k++) {
                         double aa = a + k * Math.PI;
                         w.spawnParticle(Particle.END_ROD, at.getX() + Math.cos(aa) * 0.6,
-                                at.getY() + (t - 16) * 0.09, at.getZ() + Math.sin(aa) * 0.6, 1, 0, 0, 0, 0);
+                                at.getY() + (t - beam) * 0.09, at.getZ() + Math.sin(aa) * 0.6, 1, 0, 0, 0, 0);
                     }
                 } else {
                     AttributeInstance sc = m.body.getAttribute(Attribute.SCALE);
@@ -2339,7 +2668,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double max = getConfig().getDouble("mascot.breeding.baby-health", 10.0);
         double left = babyHp.getOrDefault(m.babyId, max) - dmg;
         m.body.playHurtAnimation(0f);
-        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, sfx("hurt", 1f), 1.6f);
+        m.body.getWorld().playSound(m.body.getLocation(), soundName("hit", "entity.copper_golem.hurt"), SoundCategory.PLAYERS, sfx("hurt", 1f), 1.5f);
         m.body.getWorld().spawnParticle(Particle.DAMAGE_INDICATOR, m.body.getLocation().add(0, 0.7, 0), 4, 0.2, 0.2, 0.2);
         if (left <= 0) killBaby(m);
         else babyHp.put(m.babyId, left);
@@ -2742,6 +3071,16 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         double dmg = e.getFinalDamage();
         if (dmg <= 0) return;
+        switch (e.getCause()) {
+            case FIRE, FIRE_TICK, LAVA, HOT_FLOOR, CAMPFIRE -> {
+                long nowMs = System.currentTimeMillis();
+                if (nowMs - m.lastFireHit < 500L) return; // no damage flood every tick
+                m.lastFireHit = nowMs;
+                dmg *= getConfig().getDouble("mascot.fire-damage-multiplier", 0.5);
+            }
+            default -> {
+            }
+        }
         if (m.baby) {
             hurtBaby(m, e.getCause() == EntityDamageEvent.DamageCause.POISON ? 0 : dmg);
             return;
