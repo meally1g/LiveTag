@@ -97,6 +97,11 @@ mascot:
     - "1C8C1C"   # 16 deep_green
     - "8C541C"   # 17 deep_orange
 
+  # A mascot holding a Totem of Undying pops it to save its streamer from a deadly hit.
+  # (Give it the totem like any held item: right-click the mascot with it.)
+  totem-save: true
+  totem-range: 40           # the mascot must be this close to its streamer
+
   # Breeding: each owner feeds their mascot the item below, then the two mascots stand close together and a
   # baby appears. It is smaller, shows BOTH streamers' chats, follows the closer parent and cannot be hurt.
   breeding:
