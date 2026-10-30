@@ -13,6 +13,9 @@ import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.FluidCollisionMode;
 import org.bukkit.util.RayTraceResult;
+import org.bukkit.util.Transformation;
+import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
 import org.bukkit.util.Vector;
 import org.bukkit.GameMode;
 import org.bukkit.Particle;
@@ -45,6 +48,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityRegainHealthEvent;
 import org.bukkit.event.entity.EntityUnleashEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
@@ -56,6 +60,10 @@ import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.LeatherArmorMeta;
+import org.bukkit.inventory.meta.PotionMeta;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
+import org.bukkit.potion.PotionType;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -935,6 +943,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         UUID leashPlayer;
         Location walkGoal; // where it is currently walking to (null = not walking)
         int stuck;
+        long lastRegenFx;
         boolean leather = true; // wearing the default coloured leather outfit (no coloured skin)
         long lastDamage;
         long lastRegen;
@@ -1023,10 +1032,16 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Integer idx = colorIndex.get(id);
         if (idx == null) {
             Set<Integer> used = new HashSet<>(colorIndex.values());
+            // prefer free colours whose skin has been filled in, so the mascot really gets its skin
+            List<Map<?, ?>> skinList = getConfig().getMapList("mascot.skins");
             List<Integer> free = new ArrayList<>();
+            List<Integer> freeSkinned = new ArrayList<>();
             for (int i = 0; i < pal.length; i++) {
-                if (!used.contains(i)) free.add(i);
+                if (used.contains(i)) continue;
+                free.add(i);
+                if (i < skinList.size() && !text(skinList.get(i).get("value")).isEmpty()) freeSkinned.add(i);
             }
+            if (!freeSkinned.isEmpty()) free = freeSkinned;
             int pick = free.isEmpty()
                     ? ThreadLocalRandom.current().nextInt(pal.length) // every colour taken: reuse one
                     : free.get(ThreadLocalRandom.current().nextInt(free.size()));
@@ -1159,6 +1174,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
             boolean isLive = twitchLive.contains(id) || preview.contains(id);
 
+            // Regeneration potion effect (vanilla rate: 1 health every 50 >> level ticks)
+            PotionEffect rg = m.body.getPotionEffect(PotionEffectType.REGENERATION);
+            if (rg != null && now - m.lastRegenFx >= (50L >> Math.min(rg.getAmplifier(), 5)) * 50L) {
+                healMascot(m, 1.0);
+                m.lastRegenFx = now;
+            }
+
             // slow natural healing
             double max = maxHp();
             double cur = hp(id);
@@ -1173,7 +1195,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (m.liveShown == null || m.liveShown != isLive || m.nameDirty) {
                 m.liveShown = isLive;
                 m.nameDirty = false;
-                m.body.customName(mascotName(id, m.rgb, isLive));
+                updateNameplate(m.body, id, m.rgb, isLive);
             }
             handleBoat(m, id, p);
             boolean walk = !grave && (leashed != null || (p != null && !stay.contains(id)));
@@ -1243,15 +1265,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return text;
     }
 
-    /** One chat line for the speech bubble: coloured name, dark text on the light bubble. */
+    /** One chat line: coloured name, grey colon, white text (no background). */
     private Component bubbleLine(String name, String text, int rgb) {
-        int dark = (((rgb >> 16) & 0xFF) * 55 / 100) << 16
-                | (((rgb >> 8) & 0xFF) * 55 / 100) << 8
-                | ((rgb & 0xFF) * 55 / 100);
         return Component.empty()
-                .append(Component.text(name, net.kyori.adventure.text.format.TextColor.color(dark), TextDecoration.BOLD))
-                .append(Component.text(": ", net.kyori.adventure.text.format.TextColor.color(0x555555)))
-                .append(Component.text(text, net.kyori.adventure.text.format.TextColor.color(0x1E1E1E)));
+                .append(Component.text(name, TextColor.color(rgb), TextDecoration.BOLD))
+                .append(Component.text(": ", NamedTextColor.GRAY))
+                .append(Component.text(text, NamedTextColor.WHITE));
     }
 
     private void addLine(Mascot m, Component line, long expiresAt, int max) {
@@ -1358,18 +1377,37 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(target.clone().add(0, 0.8, 0));
     }
 
+    /** Short name tag: just the streamer's name (with a red dot while they are live). */
     private Component mascotName(UUID id, int rgb, boolean live) {
         String name = Bukkit.getOfflinePlayer(id).getName();
         if (name == null) name = "Streamer";
         Component n = Component.text(name, TextColor.color(rgb));
-        Component out = live ? prefix().append(n) : n;
+        return live ? Component.text("\u25CF ", NamedTextColor.RED).append(n) : n;
+    }
+
+    /** Hearts under the name, like a player's health: 10 hearts, a half heart for odd points. */
+    private Component healthBar(UUID id) {
         double cur = hp(id);
         double max = maxHp();
-        if (cur < max - 0.01) {
-            out = out.append(Component.text("  ♥ " + (int) Math.ceil(cur) + "/" + (int) max,
-                    NamedTextColor.RED));
+        boolean always = getConfig().getBoolean("mascot.always-show-health", false);
+        if (!always && cur >= max - 0.01) return null;
+        int hearts = 10;
+        double perHeart = max / hearts;
+        Component out = Component.empty();
+        for (int i = 0; i < hearts; i++) {
+            double inHeart = cur - i * perHeart;
+            net.kyori.adventure.text.format.TextColor col;
+            if (inHeart >= perHeart - 0.01) col = NamedTextColor.RED;                 // full heart
+            else if (inHeart >= perHeart / 2 - 0.01) col = TextColor.color(0x992222); // half heart
+            else col = NamedTextColor.DARK_GRAY;                                      // empty
+            out = out.append(Component.text("\u2764", col));
         }
         return out;
+    }
+
+    private void updateNameplate(Mannequin e, UUID id, int rgb, boolean live) {
+        e.customName(mascotName(id, rgb, live));
+        e.setDescription(healthBar(id));
     }
 
     private Mascot createMascot(UUID id, Location base) {
@@ -1387,11 +1425,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 e.setGravity(false);
                 e.setCollidable(false);
                 e.setImmovable(true);
-                e.setDescription(null);
+                e.setInvulnerable(false); // mannequins are invulnerable by default; the plugin handles damage itself
                 AttributeInstance sc = e.getAttribute(Attribute.SCALE);
                 if (sc != null) sc.setBaseValue(mascotScale());
                 e.addScoreboardTag(MASCOT_TAG);
-                e.customName(mascotName(id, rgb, false));
+                updateNameplate(e, id, rgb, false);
                 e.setCustomNameVisible(true);
                 skinned[0] = applySkin(e, id);
                 dressMascot(e, rgb, id, !skinned[0]);
@@ -1402,14 +1440,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 t.addScoreboardTag(MASCOT_TAG);
                 t.setBillboard(Display.Billboard.CENTER);
                 t.setAlignment(TextDisplay.TextAlignment.CENTER);
-                t.setShadowed(false);
-                t.setLineWidth(220);
+                t.setShadowed(true);
+                t.setLineWidth(200);
                 t.setTeleportDuration(3);
-                // light speech-bubble background with a faint tint of the streamer's colour
-                t.setBackgroundColor(Color.fromARGB(235,
-                        (255 * 85 + ((rgb >> 16) & 0xFF) * 15) / 100,
-                        (255 * 85 + ((rgb >> 8) & 0xFF) * 15) / 100,
-                        (255 * 85 + (rgb & 0xFF) * 15) / 100));
+                t.setDefaultBackground(false);
+                t.setBackgroundColor(Color.fromARGB(0, 0, 0, 0)); // no background box
+                float bs = (float) Math.max(0.2, getConfig().getDouble("mascot.board-scale", 0.6));
+                t.setTransformation(new Transformation(new Vector3f(0, 0, 0), new AxisAngle4f(),
+                        new Vector3f(bs, bs, bs), new AxisAngle4f()));
                 t.text(Component.empty());
                 t.setViewRange(0f);
             });
@@ -1489,9 +1527,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Color color = Color.fromRGB(rgb);
         Map<EquipmentSlot, ItemStack> mine = customArmor.get(id);
         eq.setHelmet(pick(mine, EquipmentSlot.HEAD, null));
-        eq.setChestplate(pick(mine, EquipmentSlot.CHEST, leather ? dyed(Material.LEATHER_CHESTPLATE, color) : null));
-        eq.setLeggings(pick(mine, EquipmentSlot.LEGS, leather ? dyed(Material.LEATHER_LEGGINGS, color) : null));
-        eq.setBoots(pick(mine, EquipmentSlot.FEET, leather ? dyed(Material.LEATHER_BOOTS, color) : null));
+        eq.setChestplate(pick(mine, EquipmentSlot.CHEST, dyed(Material.LEATHER_CHESTPLATE, color))); // coloured chestplate only
+        eq.setLeggings(pick(mine, EquipmentSlot.LEGS, null));
+        eq.setBoots(pick(mine, EquipmentSlot.FEET, null));
         // The streamer keeps their own armour, so nothing should drop if the mascot is removed.
         try {
             for (EquipmentSlot slot : EquipmentSlot.values()) {
@@ -1684,6 +1722,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         String why = describeCause(e);
         UUID id = m.owner;
         double left = hp(id) - dmg;
+        if (e.getCause() == EntityDamageEvent.DamageCause.POISON) left = Math.max(left, 1.0); // poison never kills, like in vanilla
         m.lastDamage = System.currentTimeMillis();
         m.nameDirty = true;
         dataDirty = true;
@@ -1743,7 +1782,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
 
         if (hand.getType().isAir()) {
-            if (p.isSneaking() && (owner || getConfig().getBoolean("mascot.others-can-take-armor", true))) {
+            if (p.isSneaking() && (owner || getConfig().getBoolean("mascot.others-can-take-armor", false))) {
                 takeArmor(p, m);
             }
             return;
@@ -1752,9 +1791,54 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (slot == EquipmentSlot.HEAD || slot == EquipmentSlot.CHEST
                 || slot == EquipmentSlot.LEGS || slot == EquipmentSlot.FEET) {
             if (owner) equipArmor(p, m, slot, hand);
+        } else if (hand.getType() == Material.POTION) {
+            if (owner || getConfig().getBoolean("mascot.others-can-feed", true)) givePotion(p, m, hand);
         } else if (hand.getType().isEdible()) {
             if (owner || getConfig().getBoolean("mascot.others-can-feed", true)) feedMascot(p, m, hand);
         }
+    }
+
+    /** Healing from potions (instant health) goes into the mascot's own health, not the hidden real one. */
+    @EventHandler
+    public void onMascotRegain(EntityRegainHealthEvent e) {
+        if (!isMascotEntity(e.getEntity())) return;
+        e.setCancelled(true);
+        Mascot m = mascotOf(e.getEntity());
+        if (m == null || m.isGrave) return;
+        healMascot(m, e.getAmount());
+    }
+
+    private void healMascot(Mascot m, double amount) {
+        UUID id = m.owner;
+        double max = maxHp();
+        double cur = hp(id);
+        if (cur >= max || amount <= 0) return;
+        hpMap.put(id, Math.min(max, cur + amount));
+        m.nameDirty = true;
+        dataDirty = true;
+    }
+
+    /** Right-click with a drinkable potion: the mascot gets its effects (fire resistance, regeneration...). */
+    private void givePotion(Player p, Mascot m, ItemStack hand) {
+        if (!(hand.getItemMeta() instanceof PotionMeta pm)) return;
+        List<PotionEffect> effects = new ArrayList<>(pm.getCustomEffects());
+        PotionType base = pm.getBasePotionType();
+        if (base != null) effects.addAll(base.getPotionEffects());
+        if (effects.isEmpty()) return;
+        for (PotionEffect ef : effects) {
+            PotionEffectType t = ef.getType();
+            if (t.equals(PotionEffectType.INSTANT_HEALTH)) {
+                healMascot(m, 4.0 * (1 << Math.min(ef.getAmplifier(), 6)));
+            } else if (t.equals(PotionEffectType.INSTANT_DAMAGE)) {
+                m.body.damage(6.0 * (1 << Math.min(ef.getAmplifier(), 6)));
+            } else {
+                m.body.addPotionEffect(ef);
+            }
+        }
+        takeOne(p, hand);
+        giveBack(p, new ItemStack(Material.GLASS_BOTTLE));
+        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_GENERIC_DRINK, 1f, 1f);
+        p.sendActionBar(Component.text("The mascot drank the potion.", NamedTextColor.LIGHT_PURPLE));
     }
 
     private void takeOne(Player p, ItemStack hand) {
