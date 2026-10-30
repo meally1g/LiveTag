@@ -166,6 +166,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     private final Map<UUID, Baby> babies = new HashMap<>();
     private final Map<UUID, Mascot> babyMascots = new HashMap<>();
+    private final Set<UUID> babyChatOff = new HashSet<>();
+    private final Set<UUID> babyStay = new HashSet<>();
+    private final Map<UUID, Double> babyHp = new HashMap<>();
     private final Map<UUID, Long> inLove = new HashMap<>(); // streamer -> until when their mascot is in love
     private final Map<UUID, Long> lastLive = new ConcurrentHashMap<>(); // when each streamer was last seen live
     private final Map<UUID, Home> homes = new ConcurrentHashMap<>();
@@ -1065,6 +1068,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         int seekTicks; // how long it has been trying to reach a ladder
         long jumpHeldSince; // when the owner started holding the jump key
         long sneakSince; // when the owner started crouching
+        long contactSince; // when a player started looking at it (0 = nobody)
         boolean crouching;
         long tpAt; // when a delayed teleport will happen (0 = none planned)
         long hopUntil; // hops while it keeps walking (owner holds jump)
@@ -1072,6 +1076,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double kx; // knockback speed (decays every tick)
         double kz;
         boolean baby; // a baby of two streamers: shows both chats
+        UUID babyId; // baby only: its id in the babies map
+        boolean chatOff; // baby only: right-click toggles its chat
         String login2; // the other parent's Twitch channel (babies only)
         double sizeFactor = 1.0; // 0.5 for babies
 
@@ -1409,7 +1415,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         int max = Math.max(1, getConfig().getInt("mascot.max-lines", 6));
         // Chat is shown as plain text only - never parsed as formatting.
         for (Mascot m : allMascots()) {
-            if (!m.isGrave && m.listensTo(msg.channel())) {
+            if (!m.isGrave && !m.chatOff && m.listensTo(msg.channel())) {
                 addLine(m, bubbleLine(name, text, m.rgb), now + ttl, max);
                 playChatSound(m, text, now);
             }
@@ -1465,7 +1471,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         String sound = cs == null ? defaultSound : cs.getString("sounds." + soundKey, defaultSound);
 
         for (Mascot m : allMascots()) {
-            if (m.isGrave || !(msg.channel().equals("preview:" + m.owner) || m.listensTo(msg.channel()))) continue;
+            if (m.isGrave || m.baby || m.chatOff || !(msg.channel().equals("preview:" + m.owner) || m.listensTo(msg.channel()))) continue;
             addLine(m, line, now + ttl, max);
             if (cs == null || cs.getDouble("jump-seconds", 8.0) > 0) {
                 m.partyUntil = Math.max(m.partyUntil, now + (long) ((cs == null ? 8.0 : cs.getDouble("jump-seconds", 8.0)) * 1000L));
@@ -1575,7 +1581,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     /** Hurts the mascot without an event (fall damage). Kills it if its health runs out. */
     private void hurtMascot(Mascot m, double dmg, String why) {
-        if (dmg <= 0 || m.baby || m.isGrave || m.body == null || !getConfig().getBoolean("mascot.can-be-killed", true)) return;
+        if (m.baby) {
+            hurtBaby(m, dmg);
+            return;
+        }
+        if (dmg <= 0 || m.isGrave || m.body == null || !getConfig().getBoolean("mascot.can-be-killed", true)) return;
         UUID id = m.owner;
         double left = hp(id) - dmg;
         m.lastDamage = System.currentTimeMillis();
@@ -1724,6 +1734,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 next = cur.clone();
                 next.setPitch(0f);
                 if (dist > 0.05) next.setYaw((float) Math.toDegrees(Math.atan2(-dx, dz)));
+                tiltHead(m, next, dist);
 
                 // --- horizontal movement
                 double mx = 0;
@@ -1878,12 +1889,51 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                         snapped = true;
                     }
                 }
-                if (!snapped && next.distanceSquared(cur) < 1.0E-6 && Math.abs(next.getYaw() - cur.getYaw()) < 2f) continue;
+                if (!snapped && next.distanceSquared(cur) < 1.0E-6 && Math.abs(next.getYaw() - cur.getYaw()) < 2f
+                        && Math.abs(next.getPitch() - cur.getPitch()) < 2f) continue;
             }
             m.body.teleport(next);
             if (m.board != null && m.board.isValid()) m.board.teleport(next.clone().add(0, boardHeight * m.sizeFactor, 0));
             if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(next.clone().add(0, 0.8, 0));
         }
+    }
+
+    /** Eye contact: a mascot that is standing still and being looked at turns to the player and cocks its head. */
+    private void tiltHead(Mascot m, Location next, double dist) {
+        if (m.isGrave || m.body == null || next.getWorld() == null
+                || !getConfig().getBoolean("mascot.eye-contact-tilt", true) || dist > m.stopDist + 0.3) {
+            m.contactSince = 0;
+            return;
+        }
+        double eyeH = 1.6 * mascotScale() * m.sizeFactor;
+        Location eye = next.clone().add(0, eyeH, 0);
+        Player watcher = null;
+        for (Player pl : next.getWorld().getPlayers()) {
+            if (pl.getGameMode() == org.bukkit.GameMode.SPECTATOR) continue;
+            Location pe = pl.getEyeLocation();
+            Vector to = eye.toVector().subtract(pe.toVector());
+            double d = to.length();
+            if (d > 8.0 || d < 0.5) continue;
+            if (pe.getDirection().dot(to.normalize()) < 0.985) continue; // about 10 degrees
+            if (!pl.hasLineOfSight(m.body)) continue;
+            watcher = pl;
+            break;
+        }
+        if (watcher == null) {
+            m.contactSince = 0;
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (m.contactSince == 0) m.contactSince = now;
+        Vector look = watcher.getEyeLocation().toVector().subtract(eye.toVector());
+        float yaw = (float) Math.toDegrees(Math.atan2(-look.getX(), look.getZ()));
+        float pitch = (float) -Math.toDegrees(Math.atan2(look.getY(), Math.hypot(look.getX(), look.getZ())));
+        if (now - m.contactSince > 400) { // after a moment it cocks its head to the side
+            yaw += 22f;
+            pitch += 14f;
+        }
+        next.setYaw(yaw);
+        next.setPitch(pitch);
     }
 
     private void moveMascot(Mascot m, Location target) {
@@ -2144,15 +2194,64 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
     }
 
+    private Baby babyOf(Mascot m) {
+        return m.babyId == null ? null : babies.get(m.babyId);
+    }
+
+    private void hurtBaby(Mascot m, double dmg) {
+        if (dmg <= 0 || m.body == null || m.babyId == null) return;
+        double max = getConfig().getDouble("mascot.breeding.baby-health", 10.0);
+        double left = babyHp.getOrDefault(m.babyId, max) - dmg;
+        m.body.playHurtAnimation(0f);
+        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, 1f, 1.6f);
+        m.body.getWorld().spawnParticle(Particle.DAMAGE_INDICATOR, m.body.getLocation().add(0, 0.7, 0), 4, 0.2, 0.2, 0.2);
+        if (left <= 0) killBaby(m);
+        else babyHp.put(m.babyId, left);
+    }
+
+    /** A baby that dies is gone for good (no grave, no reviving). Its parents may have a new one. */
+    private void killBaby(Mascot m) {
+        Baby b = babyOf(m);
+        if (m.body != null && m.body.isValid()) {
+            Location at = m.body.getLocation().add(0, 0.6, 0);
+            at.getWorld().spawnParticle(Particle.SMOKE, at, 25, 0.2, 0.3, 0.2, 0.02);
+            at.getWorld().playSound(at, Sound.ENTITY_PLAYER_DEATH, SoundCategory.PLAYERS, 1f, 1.6f);
+        }
+        if (m.babyId != null) {
+            babyMascots.remove(m.babyId);
+            babies.remove(m.babyId);
+            babyHp.remove(m.babyId);
+            babyChatOff.remove(m.babyId);
+            babyStay.remove(m.babyId);
+        }
+        discard(m);
+        dataDirty = true;
+        if (b != null && getConfig().getBoolean("mascot.breeding.announce", true)) {
+            Bukkit.broadcast(Component.text("The baby of " + streamerName(b.a()) + " and " + streamerName(b.b())
+                    + " died.", NamedTextColor.GRAY));
+        }
+    }
+
+    /** Right-click: stop / start following. Sneak + right-click: chat off / on. */
     private void babyClick(Player p, Mascot m) {
         Location at = m.body.getLocation().add(0, 0.8, 0);
-        at.getWorld().spawnParticle(Particle.HEART, at, 4, 0.2, 0.2, 0.2, 0.01);
-        Baby b = null;
-        for (Baby cand : babies.values()) {
-            if (babyMascots.get(cand.id()) == m) b = cand;
-        }
-        if (b != null) {
-            p.sendActionBar(Component.text("The baby of " + streamerName(b.a()) + " and " + streamerName(b.b()),
+        at.getWorld().spawnParticle(Particle.HEART, at, 3, 0.2, 0.2, 0.2, 0.01);
+        Baby b = babyOf(m);
+        if (b == null) return;
+        if (p.isSneaking()) {
+            m.chatOff = !m.chatOff;
+            if (m.chatOff) {
+                babyChatOff.add(b.id());
+                m.lines.clear();
+                m.dirty = true;
+            } else {
+                babyChatOff.remove(b.id());
+            }
+            p.sendActionBar(Component.text("Baby chat " + (m.chatOff ? "off" : "on"), NamedTextColor.LIGHT_PURPLE));
+        } else {
+            boolean nowStay = babyStay.add(b.id());
+            if (!nowStay) babyStay.remove(b.id());
+            p.sendActionBar(Component.text(nowStay ? "The baby stays here." : "The baby follows again.",
                     NamedTextColor.LIGHT_PURPLE));
         }
     }
@@ -2168,6 +2267,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double factor = Math.max(0.2, getConfig().getDouble("mascot.breeding.baby-scale", 0.5));
         Mascot m = new Mascot(b.a(), links.get(b.a()), rgb);
         m.baby = true;
+        m.babyId = b.id();
+        m.chatOff = babyChatOff.contains(b.id());
         m.login2 = links.get(b.b());
         m.sizeFactor = factor;
         m.stopDist = 2.0;
@@ -2178,12 +2279,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 e.setGravity(false);
                 e.setCollidable(false);
                 e.setImmovable(true);
-                e.setInvulnerable(true); // babies cannot be hurt
+                e.setInvulnerable(false); // the plugin handles the baby's damage itself
                 AttributeInstance sc = e.getAttribute(Attribute.SCALE);
                 if (sc != null) sc.setBaseValue(mascotScale() * factor);
                 e.addScoreboardTag(MASCOT_TAG);
                 e.customName(Component.text(streamerName(b.a()) + " + " + streamerName(b.b()), TextColor.color(rgb)));
                 e.setCustomNameVisible(true);
+                e.setDescription(Component.text("baby", NamedTextColor.GRAY)); // replaces the default "NPC"
                 applySkin(e, b.a()); // the skin of the first parent's colour
                 EntityEquipment eq = e.getEquipment();
                 if (eq != null) {
@@ -2322,7 +2424,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
             m.login = links.get(b.a());
             m.login2 = links.get(b.b());
-            m.walkGoal = near.getLocation();
+            m.walkGoal = babyStay.contains(b.id()) ? null : near.getLocation();
             m.stopDist = 2.0;
             if (offlineChat || twitchLive.contains(b.a()) || twitchLive.contains(b.b())) {
                 if (m.login != null) channels.add(m.login);
@@ -2486,7 +2588,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         e.setCancelled(true);
 
         Mascot m = mascotOf(ent);
-        if (m == null || m.isGrave || m.baby) return;
+        if (m == null || m.isGrave) return;
         if (!getConfig().getBoolean("mascot.can-be-killed", true)) return;
         switch (e.getCause()) {
             case SUFFOCATION, DROWNING, CRAMMING, FREEZE -> {
@@ -2497,6 +2599,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         double dmg = e.getFinalDamage();
         if (dmg <= 0) return;
+        if (m.baby) {
+            hurtBaby(m, e.getCause() == EntityDamageEvent.DamageCause.POISON ? 0 : dmg);
+            return;
+        }
 
         Player killer = null;
         if (e instanceof EntityDamageByEntityEvent byEntity) {
