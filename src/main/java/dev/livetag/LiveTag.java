@@ -47,6 +47,7 @@ import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Projectile;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Mannequin;
+import org.bukkit.entity.Pose;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
@@ -1009,6 +1010,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double vy; // vertical speed while falling
         double fallDist; // blocks fallen so far
         int seekTicks; // how long it has been trying to reach a ladder
+        long sneakSince; // when the owner started crouching
+        boolean crouching;
         long tpAt; // when a delayed teleport will happen (0 = none planned)
         long partyUntil; // jumps on the spot until this time (Twitch events)
         double kx; // knockback speed (decays every tick)
@@ -1268,6 +1271,20 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 updateNameplate(m.body, id, m.rgb, isLive);
             }
             handleBoat(m, id, p);
+
+            // crouches when its owner has been crouching for a while
+            double crouchAfter = getConfig().getDouble("mascot.crouch-after-seconds", 2.0);
+            boolean wantCrouch = false;
+            if (crouchAfter >= 0 && p != null && p.isSneaking()) {
+                if (m.sneakSince == 0) m.sneakSince = now;
+                wantCrouch = now - m.sneakSince >= (long) (crouchAfter * 1000L);
+            } else {
+                m.sneakSince = 0;
+            }
+            if (wantCrouch != m.crouching && !m.body.isInsideVehicle()) {
+                m.crouching = wantCrouch;
+                m.body.setPose(wantCrouch ? Pose.SNEAKING : Pose.STANDING, wantCrouch);
+            }
             if (!grave && !m.body.isInsideVehicle()) {
                 // walkTick (every tick) walks it to its goal, handles gravity and fall damage
                 boolean staying = leashed == null && stay.contains(id);
@@ -1547,6 +1564,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
      */
     private void walkTick() {
         double boardHeight = boardHeight();
+        double tpDist = getConfig().getDouble("mascot.teleport-distance", 12.0); // like a dog: 12 blocks
         for (Mascot m : mascots.values()) {
             Location goal = m.walkGoal;
             if (goal == null || m.isGrave || m.body == null || !m.body.isValid() || m.body.isInsideVehicle()) continue;
@@ -1569,16 +1587,16 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
             // a ladder can get it up a tall wall instead of teleporting
             Location ladder = null;
-            if (follow && !onLadder && dy > 1.8 && dist <= 20) ladder = findLadder(w, cur);
-            boolean climbTrip = follow && dist <= 20 && dy > 3.5 && dy <= 40 && (onLadder || ladder != null)
+            if (follow && !onLadder && dy > 1.8 && dist <= tpDist) ladder = findLadder(w, cur);
+            boolean climbTrip = follow && dist <= tpDist && dy > 3.5 && dy <= 40 && (onLadder || ladder != null)
                     && m.seekTicks < 600;
             if (dy > 1.8) m.seekTicks++; else m.seekTicks = 0;
 
             Location next;
             boolean snapped = false;
             boolean otherWorld = goal.getWorld() != w;
-            boolean needTp = otherWorld || (follow && !climbTrip && (dist > 20 || Math.abs(dy) > 3.5)) || m.stuck > 40;
-            double tpDelay = getConfig().getDouble("mascot.teleport-delay-seconds", 1.5);
+            boolean needTp = otherWorld || (follow && !climbTrip && (dist > tpDist || Math.abs(dy) > 3.5)) || m.stuck > 40;
+            double tpDelay = getConfig().getDouble("mascot.teleport-delay-seconds", 3.0);
             if (needTp && !otherWorld && tpDelay > 0) {
                 long nowMs = System.currentTimeMillis();
                 if (m.tpAt == 0) { // too far away: it gets ready to teleport, with a short delay
