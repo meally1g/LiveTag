@@ -5,6 +5,8 @@ import com.destroystokyo.paper.profile.ProfileProperty;
 import io.papermc.paper.datacomponent.item.ResolvableProfile;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.JoinConfiguration;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextColor;
 import net.kyori.adventure.text.format.TextDecoration;
@@ -959,7 +961,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return subs;
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("mascot")) {
-            return List.of("on", "off", "follow", "here", "preview", "revive", "color", "give", "debug");
+            return List.of("on", "off", "follow", "here", "preview", "revive", "color", "give", "debug", "test");
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("mascot")
                 && (args[1].equalsIgnoreCase("color") || args[1].equalsIgnoreCase("revive") || args[1].equalsIgnoreCase("give"))
@@ -1007,6 +1009,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double vy; // vertical speed while falling
         double fallDist; // blocks fallen so far
         int seekTicks; // how long it has been trying to reach a ladder
+        long tpAt; // when a delayed teleport will happen (0 = none planned)
         long partyUntil; // jumps on the spot until this time (Twitch events)
         double kx; // knockback speed (decays every tick)
         double kz;
@@ -1368,7 +1371,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         String sound = cs == null ? defaultSound : cs.getString("sounds." + soundKey, defaultSound);
 
         for (Mascot m : mascots.values()) {
-            if (m.isGrave || m.login == null || !m.login.equals(msg.channel())) continue;
+            if (m.isGrave || !(msg.channel().equals("preview:" + m.owner)
+                    || (m.login != null && m.login.equals(msg.channel())))) continue;
             addLine(m, line, now + ttl, max);
             if (cs == null || cs.getDouble("jump-seconds", 8.0) > 0) {
                 m.partyUntil = Math.max(m.partyUntil, now + (long) ((cs == null ? 8.0 : cs.getDouble("jump-seconds", 8.0)) * 1000L));
@@ -1572,14 +1576,40 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
             Location next;
             boolean snapped = false;
-            if (goal.getWorld() != w || (follow && !climbTrip && (dist > 20 || Math.abs(dy) > 3.5)) || m.stuck > 40) {
-                next = follow || goal.getWorld() != w ? groundAt(goal) : goal.clone(); // catch up instantly, on the ground
+            boolean otherWorld = goal.getWorld() != w;
+            boolean needTp = otherWorld || (follow && !climbTrip && (dist > 20 || Math.abs(dy) > 3.5)) || m.stuck > 40;
+            double tpDelay = getConfig().getDouble("mascot.teleport-delay-seconds", 1.5);
+            if (needTp && !otherWorld && tpDelay > 0) {
+                long nowMs = System.currentTimeMillis();
+                if (m.tpAt == 0) { // too far away: it gets ready to teleport, with a short delay
+                    m.tpAt = nowMs + (long) (tpDelay * 1000L);
+                    w.playSound(cur, Sound.ENTITY_ENDERMAN_TELEPORT, SoundCategory.NEUTRAL, 0.6f, 0.6f);
+                }
+                if (nowMs < m.tpAt) {
+                    w.spawnParticle(Particle.PORTAL, cur.clone().add(0, 0.9, 0), 6, 0.3, 0.6, 0.3, 0.4);
+                    continue; // charging up, standing still
+                }
+                needTp = true; // the delay is over: teleport now
+            } else if (!needTp) {
+                m.tpAt = 0;
+            }
+            if (needTp) {
+                if (!otherWorld) {
+                    w.spawnParticle(Particle.PORTAL, cur.clone().add(0, 1.0, 0), 40, 0.3, 0.7, 0.3, 0.6);
+                    w.playSound(cur, Sound.ENTITY_ENDERMAN_TELEPORT, SoundCategory.NEUTRAL, 0.8f, 1f);
+                }
+                next = follow || otherWorld ? groundAt(goal) : goal.clone(); // on the ground next to the goal
                 next.setPitch(0f);
                 m.stuck = 0;
                 m.vy = 0;
                 m.fallDist = 0;
                 m.seekTicks = 0;
+                m.tpAt = 0;
                 snapped = true;
+                if (next.getWorld() != null) {
+                    next.getWorld().spawnParticle(Particle.PORTAL, next.clone().add(0, 1.0, 0), 40, 0.3, 0.7, 0.3, 0.6);
+                    next.getWorld().playSound(next, Sound.ENTITY_ENDERMAN_TELEPORT, SoundCategory.NEUTRAL, 0.8f, 1.2f);
+                }
             } else {
                 next = cur.clone();
                 next.setPitch(0f);
@@ -2535,6 +2565,23 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return -1;
     }
 
+    /** Clickable buttons that fake a Twitch event on your own mascot. */
+    private void sendTestButtons(Player p) {
+        String[][] items = {
+                {"Sub", "sub"}, {"Resub", "resub"}, {"Gift", "gift"},
+                {"Community", "community"}, {"Raid", "raid"}, {"Cheer", "cheer"}
+        };
+        Component row = Component.text("Test an event: ", NamedTextColor.GRAY);
+        for (String[] it : items) {
+            row = row.append(Component.text("[" + it[0] + "]", NamedTextColor.GOLD, TextDecoration.BOLD)
+                    .clickEvent(ClickEvent.runCommand("/live mascot test " + it[1]))
+                    .hoverEvent(HoverEvent.showText(Component.text("Fake a " + it[0].toLowerCase(Locale.ROOT)
+                            + " event on your mascot"))))
+                    .append(Component.text(" "));
+        }
+        p.sendMessage(row);
+    }
+
     private boolean canUseMascot(Player p) {
         UUID id = p.getUniqueId();
         if (p.hasPermission("livetag.admin")) return true;
@@ -2606,6 +2653,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 }
             }
             p.sendMessage(Component.text("Mascot preview on for 2 minutes.", NamedTextColor.LIGHT_PURPLE));
+            sendTestButtons(p);
             Bukkit.getScheduler().runTaskLater(this, () -> preview.remove(id), 20L * 120L);
             return;
         }
@@ -2668,6 +2716,39 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     "follow mode: " + (stay.contains(id) ? "STAY" : "follow")
             };
             for (String l : lines) p.sendMessage(Component.text(l, NamedTextColor.GRAY));
+            return;
+        }
+
+        if (action.equals("test")) {
+            if (!p.hasPermission("livetag.admin")) {
+                p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+                return;
+            }
+            if (args.length < 3) {
+                sendTestButtons(p);
+                return;
+            }
+            Mascot tm = mascots.get(id);
+            if (tm == null || tm.isGrave || !tm.valid()) {
+                p.sendMessage(Component.text("You need a mascot first: run /live mascot preview.", NamedTextColor.RED));
+                return;
+            }
+            String fake = "preview:" + id;
+            TwitchChat.Message ev = switch (args[2].toLowerCase(Locale.ROOT)) {
+                case "sub" -> new TwitchChat.Message(fake, "Viewer1", "Viewer1 subscribed", "sub", 0);
+                case "resub" -> new TwitchChat.Message(fake, "Viewer2", "Viewer2 resubscribed for 12 months", "resub", 0);
+                case "gift" -> new TwitchChat.Message(fake, "Viewer3", "Viewer3 gifted a sub to Viewer4", "subgift", 0);
+                case "community" -> new TwitchChat.Message(fake, "Viewer5", "Viewer5 gifted 10 subs to the community",
+                        "submysterygift", 10);
+                case "raid" -> new TwitchChat.Message(fake, "Raider", "Raider raided with 120 viewers", "raid", 120);
+                case "cheer" -> new TwitchChat.Message(fake, "Viewer6", "Viewer6 cheered 500 bits", "cheer", 500);
+                default -> null;
+            };
+            if (ev == null) {
+                sendTestButtons(p);
+                return;
+            }
+            handleTwitchEvent(ev, System.currentTimeMillis());
             return;
         }
 
