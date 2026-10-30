@@ -147,8 +147,11 @@ mascot:
   pushable: true            # players can push it by walking into it, and hits knock it back
   name-source: twitch       # twitch = the name above the mascot is the Twitch channel name; minecraft = the in-game name
   teleport-distance: 12     # it teleports to you when it is this many blocks away (a dog does it at 12)
+  teleport-height: 12       # teleports (after the charge-up) at once only if its owner is more than this many blocks above or below
+  teleport-wait-seconds: 8  # if its owner is 4-12 blocks above or below, it tries to walk there for this long first
   teleport-delay-seconds: 3   # when it is too far away it charges up this long (with ender particles) before teleporting (0 = instant)
-  crouch-after-seconds: 2   # it crouches when its owner has crouched this long (-1 = never)
+  crouch-after-seconds: 1   # it crouches when its owner has crouched this long (-1 = never)
+  jump-after-seconds: 2     # it hops on the spot while its owner holds the jump key this long (-1 = never)
   follow-distance: 2.5      # how close the mascot walks to you before it stops
   scale: 0.7                # mascot size (1.0 = same as a player)
   inactivity-death-hours: 48 # mascot dies if its streamer hasn't been live this long (0 = off)
@@ -172,6 +175,8 @@ mascot:
   announce-death: true      # tell everyone in chat when it dies
   others-can-feed: true     # anyone can feed it (owner always can)
   others-can-take-armor: false # false = only the owner can take armour off it (sneak + right-click, empty hand)
+  others-can-take-item: true # anyone can take the item it holds (sneak + right-click, empty hand); armour has its own setting above
+  can-hold-item: true       # the owner can give it ONE item to hold (right-click with the item; sneak + empty hand takes it back)
   others-can-leash: false   # false = only the owner can put a lead on it (anyone holding it can let go)
 
   # A dead mascot leaves a grave. How it comes back depends on how it died:
