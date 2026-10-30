@@ -24,6 +24,7 @@ import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.Tag;
 import org.bukkit.block.Block;
+import org.bukkit.block.data.Levelled;
 import org.bukkit.block.data.Waterlogged;
 import org.bukkit.SoundCategory;
 import org.bukkit.Location;
@@ -195,8 +196,28 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     // ------------------------------------------------------------ lifecycle
 
+    /** The plugin used to be called LiveTag: take over its config and data on the first start as ChatMate. */
+    private void migrateOldFolder() {
+        try {
+            File parent = getDataFolder().getParentFile();
+            File old = parent == null ? null : new File(parent, "LiveTag");
+            if (old == null || !old.isDirectory() || getDataFolder().exists()) return;
+            getDataFolder().mkdirs();
+            for (String name : new String[]{"config.yml", "data.yml"}) {
+                File from = new File(old, name);
+                if (from.isFile()) {
+                    java.nio.file.Files.copy(from.toPath(), new File(getDataFolder(), name).toPath());
+                }
+            }
+            getLogger().info("Copied the settings and data from plugins/LiveTag.");
+        } catch (Exception e) {
+            getLogger().warning("Could not copy the old LiveTag settings: " + e.getMessage());
+        }
+    }
+
     @Override
     public void onEnable() {
+        migrateOldFolder();
         saveDefaultConfig();
         dataFile = new File(getDataFolder(), "data.yml");
         loadData();
@@ -277,7 +298,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     UUID id = UUID.fromString(key);
                     Map<EquipmentSlot, ItemStack> mine = new EnumMap<>(EquipmentSlot.class);
                     for (EquipmentSlot slot : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST,
-                            EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+                            EquipmentSlot.LEGS, EquipmentSlot.FEET, EquipmentSlot.HAND}) {
                         ItemStack it = a.getItemStack(slot.name());
                         if (it != null) mine.put(slot, it);
                     }
@@ -802,7 +823,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             for (Player o : Bukkit.getOnlinePlayers()) {
                 if (shouldShow(o.getUniqueId())) refresh(o);
             }
-            sender.sendMessage(Component.text("LiveTag reloaded.", NamedTextColor.GREEN));
+            sender.sendMessage(Component.text("ChatMate reloaded.", NamedTextColor.GREEN));
             return true;
         }
 
@@ -1009,10 +1030,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double stopDist = 2.5; // how close it walks to its goal
         double vy; // vertical speed while falling
         double fallDist; // blocks fallen so far
+        int farYTicks; // how long its owner has been far above or below it
         int seekTicks; // how long it has been trying to reach a ladder
+        long jumpHeldSince; // when the owner started holding the jump key
         long sneakSince; // when the owner started crouching
         boolean crouching;
         long tpAt; // when a delayed teleport will happen (0 = none planned)
+        long hopUntil; // hops while it keeps walking (owner holds jump)
         long partyUntil; // jumps on the spot until this time (Twitch events)
         double kx; // knockback speed (decays every tick)
         double kz;
@@ -1273,13 +1297,23 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             handleBoat(m, id, p);
 
             // crouches when its owner has been crouching for a while
-            double crouchAfter = getConfig().getDouble("mascot.crouch-after-seconds", 2.0);
+            double crouchAfter = getConfig().getDouble("mascot.crouch-after-seconds", 1.0);
             boolean wantCrouch = false;
             if (crouchAfter >= 0 && p != null && p.isSneaking()) {
                 if (m.sneakSince == 0) m.sneakSince = now;
                 wantCrouch = now - m.sneakSince >= (long) (crouchAfter * 1000L);
             } else {
                 m.sneakSince = 0;
+            }
+            // hops on the spot while its owner holds the jump key
+            double jumpAfter = getConfig().getDouble("mascot.jump-after-seconds", 2.0);
+            if (jumpAfter >= 0 && p != null && p.getCurrentInput().isJump()) {
+                if (m.jumpHeldSince == 0) m.jumpHeldSince = now;
+                if (now - m.jumpHeldSince >= (long) (jumpAfter * 1000L)) {
+                    m.hopUntil = Math.max(m.hopUntil, now + 700L);
+                }
+            } else {
+                m.jumpHeldSince = 0;
             }
             if (wantCrouch != m.crouching && !m.body.isInsideVehicle()) {
                 m.crouching = wantCrouch;
@@ -1536,7 +1570,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return b.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged();
     }
 
-    /** The nearest ladder or vine within 2 blocks (centre of its cell), or null. */
+    /** Flowing water that falls down (a waterfall column). */
+    private static boolean isFallingWater(Block b) {
+        return b.getType() == Material.WATER && b.getBlockData() instanceof Levelled lv && lv.getLevel() >= 8;
+    }
+
+    /** The nearest ladder, vine or waterfall within 2 blocks (centre of its cell), or null. */
     private Location findLadder(World w, Location at) {
         int bx = at.getBlockX();
         int by = (int) Math.floor(at.getY() + 0.1);
@@ -1546,7 +1585,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         for (int x = -2; x <= 2; x++) {
             for (int z = -2; z <= 2; z++) {
                 for (int y = 0; y <= 1; y++) {
-                    if (!isClimbable(w.getBlockAt(bx + x, by + y, bz + z))) continue;
+                    Block cand = w.getBlockAt(bx + x, by + y, bz + z);
+                    if (!isClimbable(cand) && !isFallingWater(cand)) continue;
                     double d = x * x + z * z;
                     if (d < bestD) {
                         bestD = d;
@@ -1588,14 +1628,23 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             // a ladder can get it up a tall wall instead of teleporting
             Location ladder = null;
             if (follow && !onLadder && dy > 1.8 && dist <= tpDist) ladder = findLadder(w, cur);
-            boolean climbTrip = follow && dist <= tpDist && dy > 3.5 && dy <= 40 && (onLadder || ladder != null)
+            boolean climbTrip = follow && dist <= tpDist && dy > 3.5 && dy <= 40 && (onLadder || inWater || ladder != null)
                     && m.seekTicks < 600;
             if (dy > 1.8) m.seekTicks++; else m.seekTicks = 0;
 
             Location next;
             boolean snapped = false;
             boolean otherWorld = goal.getWorld() != w;
-            boolean needTp = otherWorld || (follow && !climbTrip && (dist > tpDist || Math.abs(dy) > 3.5)) || m.stuck > 40;
+            // far above or below: it first tries to come on its own (slopes, stairs, ladders, waterfalls)
+            // and only teleports if that takes too long, or the height difference is huge
+            boolean farY = follow && !climbTrip && Math.abs(dy) > 3.5;
+            if (farY) m.farYTicks++; else m.farYTicks = 0;
+            double maxDy = getConfig().getDouble("mascot.teleport-height", 12.0);
+            int waitTicks = (int) (getConfig().getDouble("mascot.teleport-wait-seconds", 8.0) * 20);
+            boolean needTp = otherWorld
+                    || (follow && !climbTrip && (dist > tpDist || Math.abs(dy) > maxDy))
+                    || (farY && m.farYTicks > waitTicks)
+                    || m.stuck > 40;
             double tpDelay = getConfig().getDouble("mascot.teleport-delay-seconds", 3.0);
             if (needTp && !otherWorld && tpDelay > 0) {
                 long nowMs = System.currentTimeMillis();
@@ -1623,6 +1672,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 m.fallDist = 0;
                 m.seekTicks = 0;
                 m.tpAt = 0;
+                m.farYTicks = 0;
                 snapped = true;
                 if (next.getWorld() != null) {
                     next.getWorld().spawnParticle(Particle.PORTAL, next.clone().add(0, 1.0, 0), 40, 0.3, 0.7, 0.3, 0.6);
@@ -1679,8 +1729,15 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     special = true;
                     m.vy = 0;
                     m.fallDist = 0;
-                    if (dy < -1.5) newY -= 0.08; // dive after someone who is deeper
-                    else if (headWater) newY += 0.1; // float up to the surface
+                    if (dy < -1.5) {
+                        newY -= 0.08; // dive after someone who is deeper
+                    } else if (headWater) {
+                        newY += dy > 1.0 ? 0.16 : 0.1; // float up to the surface, or swim up a waterfall faster
+                    }
+                    if (dy > 1.8 && isFallingWater(w.getBlockAt(bx, (int) Math.floor(cur.getY() + 0.3), bz))) {
+                        mx = 0; // stay in the waterfall while swimming up
+                        mz = 0;
+                    }
                 }
                 boolean partying = System.currentTimeMillis() < m.partyUntil;
                 if (partying) { // celebrating: stay on the spot
@@ -1734,6 +1791,17 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 } else if (mx != 0 || mz != 0) {
                     m.stuck = 0;
                 }
+                if (follow && !special && m.vy == 0 && (mx != 0 || mz != 0) && r == null) {
+                    // a cliff edge: it only steps off if the drop is small, so it does not fall to its death
+                    RayTraceResult far = w.rayTraceBlocks(next.clone().add(0, 1.3, 0), new Vector(0, -1, 0), 4.6,
+                            FluidCollisionMode.NEVER, true);
+                    if (far == null) {
+                        next.setX(cur.getX());
+                        next.setZ(cur.getZ());
+                        r = w.rayTraceBlocks(next.clone().add(0, 1.3, 0), new Vector(0, -1, 0), reach,
+                                FluidCollisionMode.NEVER, true);
+                    }
+                }
                 double groundY = r != null ? r.getHitPosition().getY() : Double.NaN;
                 if (pushed && !follow) { // a mascot that stays keeps the spot it was pushed to
                     Location home = next.clone();
@@ -1742,7 +1810,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     dataDirty = true;
                 }
 
-                if (partying && !special && m.vy == 0 && !Double.isNaN(groundY) && cur.getY() - groundY < 0.06) {
+                if ((partying || System.currentTimeMillis() < m.hopUntil) && !special && m.vy == 0 && !Double.isNaN(groundY) && cur.getY() - groundY < 0.06) {
                     m.vy = 0.42; // hop
                 }
                 if (special) {
@@ -1881,7 +1949,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 ex.printStackTrace();
                 for (Player adm : Bukkit.getOnlinePlayers()) {
                     if (adm.hasPermission("livetag.admin")) {
-                        adm.sendMessage(Component.text("[LiveTag] Mascot spawn failed: " + ex, NamedTextColor.RED));
+                        adm.sendMessage(Component.text("[ChatMate] Mascot spawn failed: " + ex, NamedTextColor.RED));
                     }
                 }
             }
@@ -1953,6 +2021,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         eq.setChestplate(pick(mine, EquipmentSlot.CHEST, dyed(Material.LEATHER_CHESTPLATE, color))); // coloured chestplate only
         eq.setLeggings(pick(mine, EquipmentSlot.LEGS, null));
         eq.setBoots(pick(mine, EquipmentSlot.FEET, null));
+        ItemStack held = pick(mine, EquipmentSlot.HAND, null); // the one item it holds
+        eq.setItemInMainHand(held == null ? new ItemStack(Material.AIR) : held);
         // The streamer keeps their own armour, so nothing should drop if the mascot is removed.
         try {
             for (EquipmentSlot slot : EquipmentSlot.values()) {
@@ -2215,10 +2285,21 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return;
         }
 
+        boolean canHold = getConfig().getBoolean("mascot.can-hold-item", true);
         if (hand.getType().isAir()) {
-            if (p.isSneaking() && (owner || getConfig().getBoolean("mascot.others-can-take-armor", false))) {
-                takeArmor(p, m);
+            if (p.isSneaking()) {
+                Map<EquipmentSlot, ItemStack> mine = customArmor.get(m.owner);
+                boolean holding = mine != null && mine.containsKey(EquipmentSlot.HAND);
+                if (holding && (owner || getConfig().getBoolean("mascot.others-can-take-item", true))) {
+                    takeHeld(p, m); // the held item has its own rule, separate from the armour
+                } else if (owner || getConfig().getBoolean("mascot.others-can-take-armor", false)) {
+                    takeArmor(p, m);
+                }
             }
+            return;
+        }
+        if (owner && canHold && p.isSneaking()) { // sneak + right-click with an item: it holds that item
+            holdItem(p, m, hand);
             return;
         }
         EquipmentSlot slot = hand.getType().getEquipmentSlot();
@@ -2229,7 +2310,39 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (owner || getConfig().getBoolean("mascot.others-can-feed", true)) givePotion(p, m, hand);
         } else if (hand.getType().isEdible()) {
             if (owner || getConfig().getBoolean("mascot.others-can-feed", true)) feedMascot(p, m, hand);
+        } else if (owner && canHold) {
+            holdItem(p, m, hand); // any other item: the mascot holds it
         }
+    }
+
+    /** The mascot holds ONE item in its hand (a sword, a torch, a flower...). The owner gives and takes it. */
+    private void holdItem(Player p, Mascot m, ItemStack hand) {
+        ItemStack one = hand.clone();
+        one.setAmount(1);
+        Map<EquipmentSlot, ItemStack> mine =
+                customArmor.computeIfAbsent(m.owner, k -> new EnumMap<>(EquipmentSlot.class));
+        ItemStack old = mine.put(EquipmentSlot.HAND, one);
+        takeOne(p, hand);
+        if (old != null) giveBack(p, old); // swapping: the old item comes back to the owner
+        EntityEquipment eq = m.body.getEquipment();
+        if (eq != null) eq.setItemInMainHand(one.clone());
+        saveData();
+        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1f, 1f);
+        p.sendActionBar(Component.text("Your mascot is holding it now. Sneak + right-click with an empty hand to take it back.",
+                NamedTextColor.LIGHT_PURPLE));
+    }
+
+    private void takeHeld(Player p, Mascot m) {
+        Map<EquipmentSlot, ItemStack> mine = customArmor.get(m.owner);
+        ItemStack taken = mine == null ? null : mine.remove(EquipmentSlot.HAND);
+        if (mine != null && mine.isEmpty()) customArmor.remove(m.owner);
+        if (taken == null) return;
+        giveBack(p, taken);
+        EntityEquipment eq = m.body.getEquipment();
+        if (eq != null) eq.setItemInMainHand(new ItemStack(Material.AIR));
+        saveData();
+        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1f, 0.8f);
+        p.sendActionBar(Component.text("You took the item back.", NamedTextColor.GRAY));
     }
 
     /** Healing from potions (instant health) goes into the mascot's own health, not the hidden real one. */
@@ -2876,7 +2989,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
         void start() {
             running = true;
-            thread = new Thread(this::run, "LiveTag-TwitchChat");
+            thread = new Thread(this::run, "ChatMate-TwitchChat");
             thread.setDaemon(true);
             thread.start();
         }
