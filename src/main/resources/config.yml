@@ -93,6 +93,23 @@ mascot:
     - "1C8C1C"   # 16 deep_green
     - "8C541C"   # 17 deep_orange
 
+  # Show the streamer's Twitch chat on the mascot even when they are offline.
+  offline-chat: true
+  # Twitch events shown on the mascot's board: subs, resubs, gifted subs, community gifts, raids, cheers.
+  events:
+    enabled: true
+    show-seconds: 40        # how long an event stays on the board
+    notify-streamer: true   # also show it above the streamer's hotbar
+    broadcast: false        # true = announce every event to the whole server
+    cheer-min-bits: 100     # cheers below this many bits are ignored
+    jump-seconds: 8         # the mascot jumps on the spot this long for each event (0 = no jumping)
+    sounds:                 # the mascot plays these (any Minecraft sound name; empty = silent)
+      sub: entity.player.levelup
+      resub: entity.player.levelup
+      gift: entity.player.levelup
+      raid: entity.ender_dragon.growl
+      cheer: entity.experience_orb.pickup
+
   # Words in Twitch chat that make the mascot play a sound (first match wins, whole words only).
   # Use any Minecraft sound name (see the Minecraft wiki "Sounds.json" list), e.g. entity.creeper.primed
   chat-sounds:
@@ -127,6 +144,8 @@ mascot:
   board-scale: 0.6          # size of the chat text above the mascot (1.0 = normal)
   always-show-health: false # false = health bar only while it is hurt
   come-when-live: true      # the mascot jumps to its streamer (and follows again) when the stream starts
+  pushable: true            # players can push it by walking into it, and hits knock it back
+  name-source: twitch       # twitch = the name above the mascot is the Twitch channel name; minecraft = the in-game name
   follow-distance: 2.5      # how close the mascot walks to you before it stops
   scale: 0.7                # mascot size (1.0 = same as a player)
   inactivity-death-hours: 48 # mascot dies if its streamer hasn't been live this long (0 = off)
