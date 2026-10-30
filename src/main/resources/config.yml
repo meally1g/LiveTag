@@ -108,6 +108,17 @@ mascot:
     interact: 1.0    # feeding, giving armour and items, potions
     events: 1.0      # the sounds for subs, raids, cheers
     chat: 1.0        # the keyword sounds (creeper, dragon...)
+    intro: 0.6       # the entrance of a new mascot
+
+  # Chat scroll animation: how many ticks a new line takes to glide into place (0 = off, 20 ticks = 1 second).
+  chat-scroll-ticks: 6
+
+  # The big entrance when a streamer's mascot first appears (their very first stream):
+  # a beam falls from the sky, bursts, and the mascot grows out of the flash.
+  intro:
+    enabled: true
+    title: true         # show the streamer a title on screen
+    announce: false     # also tell the whole server
 
   # When its streamer crouches for this many seconds, the mascot's name and chat fade out (0 = never).
   # They come back when the streamer stops crouching.
