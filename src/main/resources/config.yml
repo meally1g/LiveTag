@@ -143,10 +143,9 @@ mascot:
   # When a player looks a standing mascot in the eyes, it turns to them and cocks its head.
   eye-contact-tilt: true
 
-  # A mascot holding a Totem of Undying pops it to save its streamer from a deadly hit.
-  # (Give it the totem like any held item: right-click the mascot with it.)
+  # A mascot holding a Totem of Undying pops it when a hit would kill it, and survives with one heart.
+  # (Give it the totem like any held item: sneak + right-click the mascot with it.)
   totem-save: true
-  totem-range: 40           # the mascot must be this close to its streamer
 
   # Breeding: each owner feeds their mascot the item below, then the two mascots stand close together and a
   # baby appears. It is smaller, shows BOTH streamers' chats, follows the closer parent and cannot be hurt.
