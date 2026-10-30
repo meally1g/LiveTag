@@ -1068,6 +1068,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         int seekTicks; // how long it has been trying to reach a ladder
         long jumpHeldSince; // when the owner started holding the jump key
         long sneakSince; // when the owner started crouching
+        float fade = 1f; // 1 = name and chat fully shown, 0 = faded out
+        boolean wantHidden; // the owner has been crouching long enough: fade out
+        boolean nameShown = true;
         long contactSince; // when a player started looking at it (0 = nobody)
         boolean crouching;
         long tpAt; // when a delayed teleport will happen (0 = none planned)
@@ -1193,6 +1196,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             saveData();
         }
         return pal[idx % pal.length];
+    }
+
+    /** A sound volume, scaled by the master volume and the volume of its group in the config. */
+    private float sfx(String group, float base) {
+        double master = getConfig().getDouble("mascot.volume.master", 1.0);
+        double part = getConfig().getDouble("mascot.volume." + group, 1.0);
+        return (float) Math.max(0.0, base * master * part);
     }
 
     private double mascotScale() {
@@ -1336,7 +1346,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 dataDirty = true;
             }
 
-            if (m.liveShown == null || m.liveShown != isLive || m.nameDirty) {
+            if (m.fade >= 0.5f && (m.liveShown == null || m.liveShown != isLive || m.nameDirty)) {
                 m.liveShown = isLive;
                 m.nameDirty = false;
                 updateNameplate(m.body, id, m.rgb, isLive);
@@ -1352,6 +1362,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             } else {
                 m.sneakSince = 0;
             }
+            double hideAfter = getConfig().getDouble("mascot.hide-after-crouch-seconds", 5.0);
+            m.wantHidden = hideAfter > 0 && m.sneakSince != 0 && now - m.sneakSince >= (long) (hideAfter * 1000L);
             // hops on the spot while its owner holds the jump key
             double jumpAfter = getConfig().getDouble("mascot.jump-after-seconds", 2.0);
             if (jumpAfter >= 0 && p != null && p.getCurrentInput().isJump()) {
@@ -1479,7 +1491,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (m.body != null && m.body.isValid()) {
                 Location at = m.body.getLocation();
                 if (sound != null && !sound.isBlank()) {
-                    at.getWorld().playSound(at, sound.trim(), SoundCategory.NEUTRAL, 1f, 1f);
+                    at.getWorld().playSound(at, sound.trim(), SoundCategory.NEUTRAL, sfx("events", 1f), 1f);
                 }
                 at.getWorld().spawnParticle(particle, at.clone().add(0, 1.4, 0), 25, 0.5, 0.6, 0.5, 0.02);
             }
@@ -1510,7 +1522,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             float vol = (float) cs.getDouble("volume", 1.0);
             float pitch = (float) cs.getDouble("pitch", 1.0);
             m.body.getWorld().playSound(m.body.getLocation(), sound.trim(),
-                    org.bukkit.SoundCategory.NEUTRAL, vol, pitch);
+                    org.bukkit.SoundCategory.NEUTRAL, sfx("chat", vol), pitch);
             return;
         }
     }
@@ -1562,7 +1574,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         List<Component> parts = new ArrayList<>();
         for (Mascot.Line l : m.lines) parts.add(l.text());
         m.board.text(Component.join(JoinConfiguration.newlines(), parts));
-        m.board.setViewRange(1f);
+        m.board.setViewRange(m.fade < 0.12f ? 0f : 1f);
     }
 
     private Location mascotLocation(Player p) {
@@ -1592,7 +1604,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         m.nameDirty = true;
         dataDirty = true;
         m.body.playHurtAnimation(0f);
-        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, 1f, 1f);
+        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, sfx("hurt", 1f), 1f);
         if (left <= 0) killMascot(m, null, why);
         else hpMap.put(id, left);
     }
@@ -1658,6 +1670,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double boardHeight = boardHeight();
         double tpDist = getConfig().getDouble("mascot.teleport-distance", 12.0); // like a dog: 12 blocks
         for (Mascot m : allMascots()) {
+            fadeTick(m);
             Location goal = m.walkGoal;
             if (goal == null || m.isGrave || m.body == null || !m.body.isValid() || m.body.isInsideVehicle()) continue;
             Location cur = m.body.getLocation();
@@ -1702,7 +1715,6 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 long nowMs = System.currentTimeMillis();
                 if (m.tpAt == 0) { // too far away: it gets ready to teleport, with a short delay
                     m.tpAt = nowMs + (long) (tpDelay * 1000L);
-                    w.playSound(cur, Sound.ENTITY_ENDERMAN_TELEPORT, SoundCategory.NEUTRAL, 0.6f, 0.6f);
                 }
                 if (nowMs < m.tpAt) {
                     w.spawnParticle(Particle.PORTAL, cur.clone().add(0, 0.9, 0), 6, 0.3, 0.6, 0.3, 0.4);
@@ -1715,7 +1727,6 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (needTp) {
                 if (!otherWorld) {
                     w.spawnParticle(Particle.PORTAL, cur.clone().add(0, 1.0, 0), 40, 0.3, 0.7, 0.3, 0.6);
-                    w.playSound(cur, Sound.ENTITY_ENDERMAN_TELEPORT, SoundCategory.NEUTRAL, 0.8f, 1f);
                 }
                 next = follow || otherWorld ? groundAt(goal) : goal.clone(); // on the ground next to the goal
                 next.setPitch(0f);
@@ -1728,7 +1739,6 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 snapped = true;
                 if (next.getWorld() != null) {
                     next.getWorld().spawnParticle(Particle.PORTAL, next.clone().add(0, 1.0, 0), 40, 0.3, 0.7, 0.3, 0.6);
-                    next.getWorld().playSound(next, Sound.ENTITY_ENDERMAN_TELEPORT, SoundCategory.NEUTRAL, 0.8f, 1.2f);
                 }
             } else {
                 next = cur.clone();
@@ -1934,6 +1944,29 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         next.setYaw(yaw);
         next.setPitch(pitch);
+    }
+
+    /** Fades the name and the chat out while the owner crouches for a while, and back in afterwards. */
+    private void fadeTick(Mascot m) {
+        float target = m.wantHidden ? 0f : 1f;
+        if (m.fade == target || m.isGrave) return;
+        m.fade = m.fade < target ? Math.min(target, m.fade + 0.05f) : Math.max(target, m.fade - 0.05f);
+        if (m.board != null && m.board.isValid()) {
+            m.board.setTextOpacity((byte) Math.max(40, Math.round(m.fade * 255f)));
+            if (m.fade < 0.12f) m.board.setViewRange(0f);
+            else if (!m.lines.isEmpty()) m.board.setViewRange(1f);
+        }
+        boolean showName = m.fade >= 0.5f;
+        if (showName != m.nameShown && m.body != null && m.body.isValid()) {
+            m.nameShown = showName;
+            m.body.setCustomNameVisible(showName);
+            if (showName) {
+                m.nameDirty = true;
+                if (m.baby) m.body.setDescription(Component.text("baby", NamedTextColor.GRAY));
+            } else {
+                m.body.setDescription(null);
+            }
+        }
     }
 
     private void moveMascot(Mascot m, Location target) {
@@ -2171,7 +2204,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         inLove.put(m.owner, System.currentTimeMillis() + secs * 1000L);
         Location at = m.body.getLocation().add(0, 1.2, 0);
         at.getWorld().spawnParticle(Particle.HEART, at, 12, 0.4, 0.4, 0.4, 0.02);
-        at.getWorld().playSound(at, Sound.ENTITY_PLAYER_BURP, SoundCategory.NEUTRAL, 1f, 1.2f);
+        at.getWorld().playSound(at, Sound.ENTITY_PLAYER_BURP, SoundCategory.NEUTRAL, sfx("baby", 1f), 1.2f);
         p.sendActionBar(Component.text("Your mascot is in love! Bring it next to another mascot that is in love too.",
                 NamedTextColor.LIGHT_PURPLE));
     }
@@ -2185,7 +2218,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         World w = mid.getWorld();
         if (w != null) {
             w.spawnParticle(Particle.HEART, mid, 40, 0.8, 0.6, 0.8, 0.05);
-            w.playSound(mid, Sound.ENTITY_VILLAGER_CELEBRATE, SoundCategory.NEUTRAL, 1f, 1f);
+            w.playSound(mid, Sound.ENTITY_VILLAGER_CELEBRATE, SoundCategory.NEUTRAL, sfx("baby", 1f), 1f);
         }
         dataDirty = true;
         if (getConfig().getBoolean("mascot.breeding.announce", true)) {
@@ -2203,7 +2236,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double max = getConfig().getDouble("mascot.breeding.baby-health", 10.0);
         double left = babyHp.getOrDefault(m.babyId, max) - dmg;
         m.body.playHurtAnimation(0f);
-        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, 1f, 1.6f);
+        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, sfx("hurt", 1f), 1.6f);
         m.body.getWorld().spawnParticle(Particle.DAMAGE_INDICATOR, m.body.getLocation().add(0, 0.7, 0), 4, 0.2, 0.2, 0.2);
         if (left <= 0) killBaby(m);
         else babyHp.put(m.babyId, left);
@@ -2215,7 +2248,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (m.body != null && m.body.isValid()) {
             Location at = m.body.getLocation().add(0, 0.6, 0);
             at.getWorld().spawnParticle(Particle.SMOKE, at, 25, 0.2, 0.3, 0.2, 0.02);
-            at.getWorld().playSound(at, Sound.ENTITY_PLAYER_DEATH, SoundCategory.PLAYERS, 1f, 1.6f);
+            at.getWorld().playSound(at, Sound.ENTITY_PLAYER_DEATH, SoundCategory.PLAYERS, sfx("baby", 1f), 1.6f);
         }
         if (m.babyId != null) {
             babyMascots.remove(m.babyId);
@@ -2359,7 +2392,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     if (grownUp && old.body != null && old.body.isValid()) {
                         Location at = old.body.getLocation().add(0, 0.8, 0);
                         at.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at, 40, 0.3, 0.5, 0.3, 0.2);
-                        at.getWorld().playSound(at, Sound.ENTITY_PLAYER_LEVELUP, SoundCategory.NEUTRAL, 1f, 1.3f);
+                        at.getWorld().playSound(at, Sound.ENTITY_PLAYER_LEVELUP, SoundCategory.NEUTRAL, sfx("baby", 1f), 1.3f);
                     }
                     discard(old);
                 }
@@ -2424,6 +2457,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
             m.login = links.get(b.a());
             m.login2 = links.get(b.b());
+            if (near.isSneaking()) {
+                if (m.sneakSince == 0) m.sneakSince = now;
+            } else {
+                m.sneakSince = 0;
+            }
+            double hideAfter = getConfig().getDouble("mascot.hide-after-crouch-seconds", 5.0);
+            m.wantHidden = hideAfter > 0 && m.sneakSince != 0 && now - m.sneakSince >= (long) (hideAfter * 1000L);
             m.walkGoal = babyStay.contains(b.id()) ? null : near.getLocation();
             m.stopDist = 2.0;
             if (offlineChat || twitchLive.contains(b.a()) || twitchLive.contains(b.b())) {
@@ -2740,7 +2780,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         EntityEquipment eq = m.body.getEquipment();
         if (eq != null) eq.setItemInMainHand(one.clone());
         saveData();
-        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1f, 1f);
+        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_ITEM_PICKUP, sfx("interact", 1f), 1f);
         p.sendActionBar(Component.text("Your mascot is holding it now. Sneak + right-click with an empty hand to take it back.",
                 NamedTextColor.LIGHT_PURPLE));
     }
@@ -2754,7 +2794,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         EntityEquipment eq = m.body.getEquipment();
         if (eq != null) eq.setItemInMainHand(new ItemStack(Material.AIR));
         saveData();
-        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1f, 0.8f);
+        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_ITEM_PICKUP, sfx("interact", 1f), 0.8f);
         p.sendActionBar(Component.text("You took the item back.", NamedTextColor.GRAY));
     }
 
@@ -2789,7 +2829,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         at.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at, 60, 0.4, 0.7, 0.4, 0.4);
         Location at2 = m.body.getLocation().add(0, 1, 0);
         at2.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at2, 30, 0.3, 0.5, 0.3, 0.3);
-        at.getWorld().playSound(at, Sound.ITEM_TOTEM_USE, SoundCategory.PLAYERS, 1f, 1f);
+        at.getWorld().playSound(at, Sound.ITEM_TOTEM_USE, SoundCategory.PLAYERS, sfx("totem", 1f), 1f);
         p.sendActionBar(Component.text("Your mascot popped its totem and saved you!", NamedTextColor.GOLD));
         saveData();
     }
@@ -2833,7 +2873,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         takeOne(p, hand);
         giveBack(p, new ItemStack(Material.GLASS_BOTTLE));
-        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_GENERIC_DRINK, 1f, 1f);
+        p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_GENERIC_DRINK, sfx("interact", 1f), 1f);
         p.sendActionBar(Component.text("The mascot drank the potion.", NamedTextColor.LIGHT_PURPLE));
     }
 
@@ -2864,7 +2904,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         EntityEquipment eq = m.body.getEquipment();
         if (eq != null) eq.setItem(slot, piece.clone());
         saveData();
-        p.getWorld().playSound(m.body.getLocation(), Sound.ITEM_ARMOR_EQUIP_GENERIC, 1f, 1f);
+        p.getWorld().playSound(m.body.getLocation(), Sound.ITEM_ARMOR_EQUIP_GENERIC, sfx("interact", 1f), 1f);
         p.sendActionBar(Component.text("Your mascot is wearing it now.", NamedTextColor.LIGHT_PURPLE));
     }
 
@@ -2888,7 +2928,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         giveBack(p, taken);
         dressMascot(m.body, m.rgb, m.owner, m.leather);
         saveData();
-        p.getWorld().playSound(m.body.getLocation(), Sound.ITEM_ARMOR_EQUIP_GENERIC, 1f, 0.7f);
+        p.getWorld().playSound(m.body.getLocation(), Sound.ITEM_ARMOR_EQUIP_GENERIC, sfx("interact", 1f), 0.7f);
         p.sendActionBar(Component.text("You took a piece of armour off the mascot.", NamedTextColor.GRAY));
     }
 
@@ -2903,7 +2943,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
         Location mouth = m.body.getLocation().add(0, 1.9, 0);
         m.body.getWorld().spawnParticle(Particle.HEART, mouth, 4, 0.3, 0.2, 0.3);
-        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_GENERIC_EAT, 1f, 1f);
+        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_GENERIC_EAT, sfx("interact", 1f), 1f);
         m.body.swingMainHand();
         saveData();
         p.sendActionBar(Component.text("The mascot enjoyed the ", NamedTextColor.LIGHT_PURPLE)
@@ -2943,7 +2983,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
         w.strikeLightningEffect(at);
         w.spawnParticle(Particle.SOUL, at.clone().add(0, 1, 0), 40, 0.4, 0.8, 0.4, 0.05);
-        w.playSound(at, Sound.ENTITY_ALLAY_DEATH, 1.5f, 0.6f);
+        w.playSound(at, Sound.ENTITY_ALLAY_DEATH, sfx("death", 1f), 0.6f);
 
         if (getConfig().getBoolean("mascot.announce-death", true)) {
             String name = Bukkit.getOfflinePlayer(id).getName();
@@ -2983,7 +3023,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             World w = at.getWorld();
             w.strikeLightningEffect(at);
             w.spawnParticle(Particle.TOTEM_OF_UNDYING, at.clone().add(0, 1, 0), 80, 0.5, 0.8, 0.5, 0.3);
-            w.playSound(at, Sound.ITEM_TOTEM_USE, 1f, 1f);
+            w.playSound(at, Sound.ITEM_TOTEM_USE, sfx("revive", 1f), 1f);
         }
         if (getConfig().getBoolean("mascot.revive.announce", true)) {
             String name = Bukkit.getOfflinePlayer(id).getName();
