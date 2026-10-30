@@ -97,6 +97,9 @@ mascot:
     - "1C8C1C"   # 16 deep_green
     - "8C541C"   # 17 deep_orange
 
+  # When a player looks a standing mascot in the eyes, it turns to them and cocks its head.
+  eye-contact-tilt: true
+
   # A mascot holding a Totem of Undying pops it to save its streamer from a deadly hit.
   # (Give it the totem like any held item: right-click the mascot with it.)
   totem-save: true
@@ -110,6 +113,7 @@ mascot:
     max-distance: 4.5       # how close the two mascots must be
     love-seconds: 30        # how long a mascot stays in love after being fed
     baby-scale: 0.5         # baby size compared with a normal mascot
+    baby-health: 10         # the baby can be killed; when it dies it is gone and a new one can be made
     baby-days: 7            # the baby grows up and leaves after this many days (0 = never)
     announce: true          # tell the server when a baby is born or grows up
 
