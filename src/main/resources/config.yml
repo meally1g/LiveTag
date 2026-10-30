@@ -97,6 +97,22 @@ mascot:
     - "1C8C1C"   # 16 deep_green
     - "8C541C"   # 17 deep_orange
 
+  # Sound volumes. 1.0 = normal, 0.5 = half, 0 = silent. "master" scales everything.
+  volume:
+    master: 1.0
+    death: 0.25      # a mascot dying
+    revive: 0.25     # a mascot coming back
+    hurt: 1.0        # a mascot taking damage
+    totem: 1.0       # a mascot popping its totem to save its streamer
+    baby: 0.3        # baby sounds (love, birth, death, growing up)
+    interact: 1.0    # feeding, giving armour and items, potions
+    events: 1.0      # the sounds for subs, raids, cheers
+    chat: 1.0        # the keyword sounds (creeper, dragon...)
+
+  # When its streamer crouches for this many seconds, the mascot's name and chat fade out (0 = never).
+  # They come back when the streamer stops crouching.
+  hide-after-crouch-seconds: 5
+
   # When a player looks a standing mascot in the eyes, it turns to them and cocks its head.
   eye-contact-tilt: true
 
