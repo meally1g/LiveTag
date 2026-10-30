@@ -17,8 +17,8 @@ messages:
 # Client ID and Client Secret below and run /live reload.
 twitch:
   enabled: true
-  client-id: ""
-  client-secret: ""
+  client-id: "dj2w1erlcj8lpupzd2vc86jlq0l428"
+  client-secret: "95dpzdcds2a3j51yshkh180f7zycpg"
   # How often to check Twitch (minimum 30).
   check-interval-seconds: 60
   # false = only staff can link accounts (stops people linking someone
@@ -68,40 +68,9 @@ mascot:
     - { color: mint, value: "ewogICJ0aW1lc3RhbXAiIDogMTc5MzMyMDA2MjkwNywKICAicHJvZmlsZUlkIiA6ICJhNjJmNGM0MWY5Y2M0ZDRhOGEyZjFkY2NjZjZkZmE5NyIsCiAgInByb2ZpbGVOYW1lIiA6ICJCMDBLWSIsCiAgInNpZ25hdHVyZVJlcXVpcmVkIiA6IHRydWUsCiAgInRleHR1cmVzIiA6IHsKICAgICJTS0lOIiA6IHsKICAgICAgInVybCIgOiAiaHR0cDovL3RleHR1cmVzLm1pbmVjcmFmdC5uZXQvdGV4dHVyZS83YzkzODViYTU0NTAxYWZjMzI1NGJkOWQwMzk1Zjg0Yjc4NzM1MmYyOGM1NDRlNGM5Zjg1YzRmZTUwMjMyN2ViIgogICAgfQogIH0KfQ==", signature: "NgS7C3Ued7ViZ36GX7k27t4zo86UWVMygeMTaujn0zZQbRGuNPG/JL8xjDSxDUCon4MkEhQ62hhy7+OCCaqdLQb5fWkKkJTP0JY3WkXkkxuScGA1KTOm7JMohB+n69frZQ0L8O7HvT8nazMBgh7Jd2dq7MOPJNAf6tvGw5PPgCUW0fpZMWpf58LZX3APjCV89eM8NoQ2cHWWsrQo6QRqkU7qCAk1S6L/e67nKljxmGrwuMIUF951WTUpaoK1GJkBGusYTrZpEbedl7b46c+jAOYPBUIM65i+6Fc1PxDTRj61jMJKbOaczzEagSMihrC/tnSigKp4V4/JYwFQUmb7BsECJxRo4m5HCB518vK+prUtPKg14F4eas3IEW3XRh/6GVAJe1y4QyTSKnfoQqB3SF0JzPszgwj7tNg/JQ7++ThjarjDukU6zqTVreOWH12TZyYqMfDoP/Xj6CDiN6HL4ta6F9wlI0q7AN0xslzd0FKeA9dbAZhtMPB1W68IyZ+DoPe1x76vhfRcZLcz0S0FWLxrxzvOOkEeP4x1en1elHzufEGMfr+MDJj9+sISrQx2icqaEXYWa03AOMouUM3tqqiHK6sBdi/h9Q4HayvySnsN+SJmiyB6OQDGNELjpBZHkmhwV+cskePLkFnTJcBO9ge+SDLNDx/lzBFNEyyxs30=" }
     - { color: deep_red, value: "ewogICJ0aW1lc3RhbXAiIDogMTc5MzMyMDA2NTg1NSwKICAicHJvZmlsZUlkIiA6ICJlYzdkYzZmZTVkM2M0ZWNiYjJiYzEwM2E3NmQ4NmE5NCIsCiAgInByb2ZpbGVOYW1lIiA6ICJQYXBlck1hY2hpbmU5MSIsCiAgInNpZ25hdHVyZVJlcXVpcmVkIiA6IHRydWUsCiAgInRleHR1cmVzIiA6IHsKICAgICJTS0lOIiA6IHsKICAgICAgInVybCIgOiAiaHR0cDovL3RleHR1cmVzLm1pbmVjcmFmdC5uZXQvdGV4dHVyZS9kM2EwZWQ3YTI3YWQzODY2NzQ5NDBkNDM3ZjEwNmViZGYwZjgzNTA4MTA4OTViMmM2OGViY2YxMWJlOTRhODc4IgogICAgfQogIH0KfQ==", signature: "k4GEKfPE6M/dX2LXBH+mQPGtBVpA7yiGRgytPsmOM3E0ub17Bj7NoIqWfVbi7bw+FApBLPSKBVunB6TlVDPzaCiveD+mMjUWbP7nInBnen8JAnm1M1OxBMPpsMyGOZR7Dk3yc/6yAprv7le82Bq8zKe6uKdAJEMA46fRpAgh6WAowx3pyNdocBpfLbaZRY4qE49n18ACIFz3L2VUuE2P+Uo+ZICmPV3BXm5hhjFdVArGMNU/Njz5mFx16FuJbLj+mj1ii0y4D3AXD0UL2BzW13sCv03xq5sLnhMvkPuTfze8Xv+aT49ezmZjtCX/tiJuM4+fBAvYxOMyLRigWa/fdZHzls+cAdbvvOCG4yyKvDRUkq80eHefSILMTNf4lDU0KQ1PrIRDYele7wab+8OmGlKsu57fagobjdfMrF935tZYaQOmcN+i4/2vbx9BlhR0SYLqYj2a638CJRldPDiGH8ORPIv2MvhoUHZEpzwQ4f2W3mUbaoPu+O59JfkPod8zp/jQAuP/CrNKJmaQ1EviV3DNh3ChfcXs9wv2BZf3tNoft+o76yzjeFFQfjp3yrC78Gf1N4M2VpPVG+tbvVPjBaTjJ3g0o1+kIMAcT1hLI5KmzIKZbQB5xx5AVbEifxj88Eg5yv9oCXZ6lbh6KHPeOPV5kb2ZzUEdUCygp4ph1l8=" }
     - { color: deep_cyan, value: "ewogICJ0aW1lc3RhbXAiIDogMTc5MzMyMDA2Njc0NCwKICAicHJvZmlsZUlkIiA6ICI0Yjk1YzI2Y2UwMDE0ZTUxOTY3ODc2Y2UzMzAwNzlmNyIsCiAgInByb2ZpbGVOYW1lIiA6ICJTdHJhd2JlcnJ5T2NlYW4iLAogICJzaWduYXR1cmVSZXF1aXJlZCIgOiB0cnVlLAogICJ0ZXh0dXJlcyIgOiB7CiAgICAiU0tJTiIgOiB7CiAgICAgICJ1cmwiIDogImh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvYTQxYTYxMzczNzhmYTQzN2RkNzk3YmVlYmQ0NzgwZTkyN2ExNWM5NmU5N2YyNjc5ZjQ5MjI2NzgyNDM0YzM2OCIKICAgIH0KICB9Cn0=", signature: "aXNXUGw928fxJc+HVopU2Ed7mPcYpJWXSON1dVCYnPcXRa7cbVj18fFGCdKFQehkqRKZVLtLVu2XXpSLtl7U11XxEDvAFcC6gg8PntXDEHhvHoiMQS00AGnxfeafK7PaT/3dtzd3YQyiL1p60V7c/MVvqAZEEM0pw1nJ+OgDXmRZPk38QciEfcSdCr0F8Ns22zhNm+abY9+oSqCMNO8+ap8do4548lJR+4loygaigl5d2PLMud6ZqYvUTJ3cjjtaOuG5POdNsrIt2aocygQRIMpcYyYKpYh/oJdO73H8zMXfBnijQdXBdfficjBgVcRGP0cC+MSQ2/T6uNLTw4sYJUFjk/ewyjuUkirJJZtMpOBMH5Hc56sRN4TOBvG30zglkVX8Optwq8EgMIrkFzmsjmBu2+dgjHbwBBF8ed/UvzAVy3VkHlB4/J54L96smo60Jz5vV1zSkEVcPa2QYyJ2ero6jr4HXLOagtCVME+Qu0G3wfLu0YAIco00/joYFdhxq6wFExBMOUD10VJBsOwMu8+ZX7FqDhg1SAkvegdKgzslExHsurlFkpSs+U5vb2FMBmRsTR88cOyCWpBeDxnZbATC5D1/8sWVRYMlTUmoNXSGIcsQXUwZdF34V1PkT+eRlh0DYEBksrcxmKVCr5P54J1s8RObQg9Jz+JpkywbcJE=" }
-    - { color: deep_yellow, value: "", signature: "" }
     - { color: deep_violet, value: "ewogICJ0aW1lc3RhbXAiIDogMTc5MzMyMDA2OTAxOSwKICAicHJvZmlsZUlkIiA6ICJhMzExN2YyMzg3MWM0YzM5OTQ5M2I0OGMwYTliZmZlNCIsCiAgInByb2ZpbGVOYW1lIiA6ICJhY2luNSIsCiAgInNpZ25hdHVyZVJlcXVpcmVkIiA6IHRydWUsCiAgInRleHR1cmVzIiA6IHsKICAgICJTS0lOIiA6IHsKICAgICAgInVybCIgOiAiaHR0cDovL3RleHR1cmVzLm1pbmVjcmFmdC5uZXQvdGV4dHVyZS8yZDQyMDExODBjNWNmZmM2ZDZjMDdhZGQ3OTNjMjUzYzQ2NzRhMDhlN2Q1ODI4OGJmYzM1OWJhYzIxMTFkZGQ3IgogICAgfQogIH0KfQ==", signature: "fvBvI4MAm4yLe6Qcj7DGjaDSPdBfrnmt/z8Yy8CY53vxQfoCl4k6cNNisxD2q7Lfs/OOPEOEneWLix+EBue1MKZNan5pwP6+iZJZNsh/Hbk5YmvsRPQLYM6R5engZzpKRMw/ocW6MLClLJ9+mf9dEodKjksgX+CohQrVLceKs0VYcnHXKbb8xRG/wOwKXNBmJF+RAMxGxq1nKH275akbRayAY/HaxU+Iy5rFjvqJd/7Ls8y4aN4ks87kJXQKygMJlcRqgg1jPF9FBePB05jJ+0v8sOL38Q8jVG/QZ+B7e15iERms4sbTnH2cbTFIC4dVMvhbpYF1sThYNe2dP5fzgi/bpD8x9dqPly8HGH/CPngwFvfEkB46zPrzxWWIHSVOFNZQ43fFbiHt32oB4lXljj4cq2iz1D6Ut58R3X6+s42247HHcwx4BaTtZWXJ1LrLLpJA0KJvzBrTw7hHZu+kJUGSNn+FrvMgCAVBPk+jwoLKi0PGdjQcbcuIOCebKKosJipnkUGZNoy0rqwjSqy8co9GMUHgwP+zIcun/CCaN/os+jdmY4dRqMGziFq2vuiTBCS3pkDc8ZLV68IUFQ3QybCiQ99jCfQFdpAQZX2f5t33Y3ZujiSvljCuZeE2VUSCCpqRA6Y3tgUOmDzlllpsLgaQwNqu4hGTg90h2SHtbog=" }
     - { color: deep_green, value: "ewogICJ0aW1lc3RhbXAiIDogMTc5MzMyMDA2OTg1MiwKICAicHJvZmlsZUlkIiA6ICIwMmI1ZWM4OTlkYTE0NzU1OTQ5YmEwMDIxOWJiYzFlYiIsCiAgInByb2ZpbGVOYW1lIiA6ICJteWllc2h1cCIsCiAgInNpZ25hdHVyZVJlcXVpcmVkIiA6IHRydWUsCiAgInRleHR1cmVzIiA6IHsKICAgICJTS0lOIiA6IHsKICAgICAgInVybCIgOiAiaHR0cDovL3RleHR1cmVzLm1pbmVjcmFmdC5uZXQvdGV4dHVyZS85NjYxYWU5M2Y4NWQ2NWEzNzdjZjk3MDVjYTI2ZjJmYTA0MGFmNWZlOTQyY2M3NjY0ZjExYjc5NzViZGNmMTU0IgogICAgfQogIH0KfQ==", signature: "iaxM7nVQcAe5A6CtGmUjdWpePCuAw4s5AJGqxM1Vv2X8P4lipSOJOjkP849N/nRgBpuNtVrHez8AG8rroJzQMcHPS3tvogXFL1ZEdsjYsBEt17OUfNRZlHenilcNi/ZCLMi5LnC+6vHxx6U8oOtQdG7WHCTdA7t6Mmv1CRnk4HC0W5TzuglLF+RhOskCUgDwbdA1dvb3JdxY54+iiocpdxeNjMbV3+mr05Q5A1nOQLRza5PQxI/u8RRPQOYOqKwAo9srb1QQP0nhBBqvvuFwGZQl+kbhoV+KzqLOGiJvgzirFCSKKaXcIyryJzQDm2YIsjjEInBAcFpHCoK2lKfflGIOh6IAJpVuFfIM3ZjESyhdh+sAgCTrL6NuTa092lyVeV/I6Z+vmXIDHommyHWcNrNbaEXwHczfWUim4xzF2cva3Bq6u6ocELSjcD5M/TbHEY2YN2hiKkORVkbXscsMKK+lpN+cS8/ScVoOn/HJkQsUqxcJ6gi0274Rg3okZ8mtjhc9qxbBNQ+anr9Qzy8XOPXG6kE2Uy1RHrIbCx8ACgZRpaDJI2b6yrCPhJ/eSeHi4kEqwMjkxcyB4mR2Z6SZzgdkmcEcF38pfc1vZo+PKzBm7UPLXMjHlw53I22SKl7bWDJRTQI+0no3WrV/kGAwxFncQ4kwbsO+mqulyAuGV0g=" }
     - { color: deep_orange, value: "ewogICJ0aW1lc3RhbXAiIDogMTc5MzMyMDA3MTA1MywKICAicHJvZmlsZUlkIiA6ICJmODY0ZjY3ZGJlN2Y0OTBlYTZlODQzMjg2M2NkZWMxOCIsCiAgInByb2ZpbGVOYW1lIiA6ICJCb3lmcmllbmQ1MDY1IiwKICAic2lnbmF0dXJlUmVxdWlyZWQiIDogdHJ1ZSwKICAidGV4dHVyZXMiIDogewogICAgIlNLSU4iIDogewogICAgICAidXJsIiA6ICJodHRwOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlLzNhMWIyYzk4YThmYWUyYjY1YzcxZGExNzAxYmI0ZTkyYTBjZjNmNTdiZTVjODU2Y2M5MzFlMDIwZjAyZmFiODAiCiAgICB9CiAgfQp9", signature: "xISOy1jPHBWhEcebmf2MtzvRUI3p3zFwRVXlu2xckViBUWRAnDi8Nr1c9Da3VrC8U1RRZ3T6DyDKJDPLyaN8OlViirkAhBGrXcPYBjYNW/EfPiVbt7qSF6AW6jVCWomHRP1/dX/A1kGGhIW0mI2lSy9QOjN0ByTHUBhsSe7v9UPGZwdVJ6UufQ2Dh7g4Ssn+CSmnd9QGUD0YW6m2rzto0glBpDnrq/LY4An7HXQPXF3Rtn/q/X1U4eV8cNfjxoxJkTRO9Y0pWXrcJd6a/4NIsADW4LHUVOnpFPYKJV0tnWqtYKZq45DXVwpAW3PFgfG136gN1rqbtPHI9DSEh0hStP2Nk98R4YVzlYi0oCZF0zx03xkiN23btC1YRipQ5sARLjuUMLPApidU/i9GP5fjAfy4Ds+3Ip0Ae2tbY10nTWIrGlMqvOECUAwt1tsHVWXYgTHmXi9U0KaVndXNqkQPlWkgaac4YfapxQYq9cFMnuWx0N0XON6H1ARoBvTxchaCTTPEyfhQ4oartIQ5H2FKS19YK836F96E3m6WvXEakPK3E5vHpCNuNu/aEmt5Ig+GfpipmwFSSmv4cvzsiV9v8GkvTgLYhpccauHn/n0nNmUIi9/cE1psRBEq+SCsQEJighSHjJB+5GWczG7DPaZoxkt8IWNFRV6DAbr7y90BzXo=" }
-    - { color: deep_azure, value: "", signature: "" }
-    - { color: deep_magenta, value: "", signature: "" }
-    - { color: deep_lime, value: "", signature: "" }
-    - { color: deep_blue, value: "", signature: "" }
-    - { color: deep_rose, value: "", signature: "" }
-    - { color: deep_mint, value: "", signature: "" }
-    - { color: soft_red, value: "", signature: "" }
-    - { color: soft_cyan, value: "", signature: "" }
-    - { color: soft_yellow, value: "", signature: "" }
-    - { color: soft_violet, value: "", signature: "" }
-    - { color: soft_green, value: "", signature: "" }
-    - { color: soft_orange, value: "", signature: "" }
-    - { color: soft_azure, value: "", signature: "" }
-    - { color: soft_magenta, value: "", signature: "" }
-    - { color: soft_lime, value: "", signature: "" }
-    - { color: soft_blue, value: "", signature: "" }
-    - { color: soft_rose, value: "", signature: "" }
-    - { color: soft_mint, value: "", signature: "" }
-    - { color: pale_red, value: "", signature: "" }
-    - { color: pale_cyan, value: "", signature: "" }
-    - { color: pale_yellow, value: "", signature: "" }
-    - { color: pale_violet, value: "", signature: "" }
-    - { color: pale_green, value: "", signature: "" }
-    - { color: pale_orange, value: "", signature: "" }
-    - { color: pale_azure, value: "", signature: "" }
-    - { color: pale_magenta, value: "", signature: "" }
-    - { color: pale_lime, value: "", signature: "" }
-    - { color: pale_blue, value: "", signature: "" }
-    - { color: pale_rose, value: "", signature: "" }
-    - { color: pale_mint, value: "", signature: "" }
 
   # Colours handed out to streamers in order, as hex. Each streamer keeps theirs, and no two
   # streamers share one. Keep this list in the SAME ORDER as 'skins' (colour 1 <-> skin 1).
@@ -120,51 +89,48 @@ mascot:
     - "32E68C"   # 12 mint
     - "8C1C1C"   # 13 deep_red
     - "1C8C8C"   # 14 deep_cyan
-    - "8C8C1C"   # 15 deep_yellow
-    - "541C8C"   # 16 deep_violet
-    - "1C8C1C"   # 17 deep_green
-    - "8C541C"   # 18 deep_orange
-    - "1C548C"   # 19 deep_azure
-    - "8C1C8C"   # 20 deep_magenta
-    - "548C1C"   # 21 deep_lime
-    - "1C1C8C"   # 22 deep_blue
-    - "8C1C54"   # 23 deep_rose
-    - "1C8C54"   # 24 deep_mint
-    - "F27979"   # 25 soft_red
-    - "79F2F2"   # 26 soft_cyan
-    - "F2F279"   # 27 soft_yellow
-    - "B679F2"   # 28 soft_violet
-    - "79F279"   # 29 soft_green
-    - "F2B679"   # 30 soft_orange
-    - "79B6F2"   # 31 soft_azure
-    - "F279F2"   # 32 soft_magenta
-    - "B6F279"   # 33 soft_lime
-    - "7979F2"   # 34 soft_blue
-    - "F279B6"   # 35 soft_rose
-    - "79F2B6"   # 36 soft_mint
-    - "FFBFBF"   # 37 pale_red
-    - "BFFFFF"   # 38 pale_cyan
-    - "FFFFBF"   # 39 pale_yellow
-    - "DFBFFF"   # 40 pale_violet
-    - "BFFFBF"   # 41 pale_green
-    - "FFDFBF"   # 42 pale_orange
-    - "BFDFFF"   # 43 pale_azure
-    - "FFBFFF"   # 44 pale_magenta
-    - "DFFFBF"   # 45 pale_lime
-    - "BFBFFF"   # 46 pale_blue
-    - "FFBFDF"   # 47 pale_rose
-    - "BFFFDF"   # 48 pale_mint
+    - "541C8C"   # 15 deep_violet
+    - "1C8C1C"   # 16 deep_green
+    - "8C541C"   # 17 deep_orange
 
-  max-lines: 6              # messages shown at once
+  # Words in Twitch chat that make the mascot play a sound (first match wins, whole words only).
+  # Use any Minecraft sound name (see the Minecraft wiki "Sounds.json" list), e.g. entity.creeper.primed
+  chat-sounds:
+    enabled: true
+    cooldown-seconds: 300
+    volume: 1.0
+    pitch: 1.0
+    sounds:
+      creeper: entity.creeper.primed
+      boom: entity.generic.explode
+      tnt: entity.generic.explode
+      zombie: entity.zombie.ambient
+      skeleton: entity.skeleton.ambient
+      enderman: entity.enderman.scream
+      ghast: entity.ghast.scream
+      dragon: entity.ender_dragon.growl
+      enderdragon: entity.ender_dragon.growl
+      cow: entity.cow.ambient
+      pig: entity.pig.ambient
+      sheep: entity.sheep.ambient
+      chicken: entity.chicken.ambient
+      villager: entity.villager.ambient
+      hmm: entity.villager.trade
+      oof: entity.player.hurt
+      gg: entity.player.levelup
+      ding: entity.experience_orb.pickup
+
+  max-lines: 5              # messages shown at once
   message-seconds: 25       # how long a message stays
   max-message-length: 70
   side-offset: 1.6          # how far to the streamer's right the mascot stands
   board-scale: 0.6          # size of the chat text above the mascot (1.0 = normal)
   always-show-health: false # false = health bar only while it is hurt
+  come-when-live: true      # the mascot jumps to its streamer (and follows again) when the stream starts
   follow-distance: 2.5      # how close the mascot walks to you before it stops
   scale: 0.7                # mascot size (1.0 = same as a player)
   inactivity-death-hours: 48 # mascot dies if its streamer hasn't been live this long (0 = off)
-  board-height: 2.4         # height of the chat board above the mascot
+  board-height: 3.0         # height of the chat board above the mascot (raise it if the name covers the chat)
 
   ignore-commands: true     # skip messages starting with !
   ignored-users:            # bots whose messages are hidden
