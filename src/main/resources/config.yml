@@ -130,6 +130,15 @@ mascot:
   berserk-cooldown-seconds: 1.0
   berserk-range: 16              # how far away it looks for somebody to attack
 
+  # true = the mascot is solid like a normal mob (arrows hit it, you bump into it) but you cannot stand on its head.
+  # false = you walk straight through it.
+  solid: true
+
+  # The grave of a dead mascot shows its own head. Adjust these if the head sits too high or too low.
+  grave:
+    head-height: 0.4   # how far above the ground the head is
+    head-scale: 1.0    # size of the head
+
   # The sounds the mascot makes (any Minecraft sound name). These are the copper golem's.
   sound-names:
     hit: entity.copper_golem.hurt
@@ -248,12 +257,15 @@ mascot:
 
   # A dead mascot leaves a grave. How it comes back depends on how it died:
   #  - killed by a PLAYER: right-click the grave holding that player's head
-  #  - killed by a mob, lava, a fall, fire, an explosion...: right-click it with a
-  #    Totem of Undying
+  #  - killed by a mob, lava, a fall, fire, an explosion...: right-click it with the
+  #    item below (5 diamonds by default) - a Totem of Undying works too
   #  - staff can always use /live mascot revive <player>
   revive:
-    totem: true             # allow the Totem of Undying for deaths not caused by a player
+    item: DIAMOND           # right-click the grave with this to bring it back (deaths not caused by a player)
+    amount: 5               # how many of that item it takes
+    totem: true             # a Totem of Undying also works for those deaths
     # When a player who killed a mascot dies, they drop their own head - so the way to
     # bring the mascot back is to take revenge. Turn off if you hand out heads another way.
     killer-head-drops: true
     announce: true          # tell everyone in chat when it is reborn
+    thank-seconds: 4        # after it is revived it crouches this long, facing whoever revived it, then goes to its owner

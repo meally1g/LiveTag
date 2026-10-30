@@ -2,17 +2,24 @@ name: LiveTag
 main: dev.livetag.LiveTag
 version: ${project.version}
 api-version: '26.3'
-description: Toggle a [LIVE] prefix next to your name while streaming.
+description: Gives every streamer a chat mascot that shows their Twitch chat, plus a [LIVE] tag.
 commands:
   live:
-    description: Toggle your [LIVE] tag
-    usage: /live [menu|on|off]
+    description: Toggle your [LIVE] tag and control your chat mascot
+    usage: /live [menu|on|off|status|mascot]
     aliases: [stream, streamer]
     permission: livetag.use
+  streamers:
+    description: Shows every linked streamer, their Twitch and whether they are live
+    usage: /streamers
+  mascot:
+    description: Staff tools for chat mascots (locate)
+    usage: /mascot locate [player]
+    permission: livetag.admin
 permissions:
   livetag.use:
-    description: Allows toggling the LIVE tag
+    description: Allows toggling the LIVE tag and using the mascot commands
     default: false
   livetag.admin:
-    description: Allows /live reload
+    description: Staff commands (link, reload, mascot give/color/revive/preview/debug/test)
     default: op
