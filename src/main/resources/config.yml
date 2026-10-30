@@ -108,17 +108,33 @@ mascot:
     interact: 1.0    # feeding, giving armour and items, potions
     events: 1.0      # the sounds for subs, raids, cheers
     chat: 1.0        # the keyword sounds (creeper, dragon...)
+    steps: 0.6       # footsteps, jumping and landing
+    idle: 0.7        # the occasional idle sound
     intro: 0.6       # the entrance of a new mascot
 
-  # Chat scroll animation: how many ticks a new line takes to glide into place (0 = off, 20 ticks = 1 second).
-  chat-scroll-ticks: 6
-
   # The big entrance when a streamer's mascot first appears (their very first stream):
-  # a beam falls from the sky, bursts, and the mascot grows out of the flash.
+  # about 10 seconds of build-up (light spirals in), then a beam falls, bursts, and the mascot grows out of the flash.
   intro:
     enabled: true
-    title: true         # show the streamer a title on screen
     announce: false     # also tell the whole server
+
+  # Fire, lava, campfires and hot blocks hurt the mascot at most twice a second, scaled by this.
+  # 1.0 = like a normal player, 0.5 = half, 0 = it takes no fire damage at all.
+  fire-damage-multiplier: 0.5
+
+  # Below this many hearts the mascot goes berserk and attacks the nearest player - its owner too.
+  # Feeding it heals it and calms it down. (0 = never)
+  berserk-below-hearts: 4
+  berserk-attacks-owner: false   # true = it attacks its own streamer too
+  berserk-damage: 2.0            # per hit, 2.0 = one heart
+  berserk-cooldown-seconds: 1.0
+  berserk-range: 16              # how far away it looks for somebody to attack
+
+  # The sounds the mascot makes (any Minecraft sound name). These are the copper golem's.
+  sound-names:
+    hit: entity.copper_golem.hurt
+    step: entity.copper_golem.step
+    idle: entity.copper_golem.spin
 
   # When its streamer crouches for this many seconds, the mascot's name and chat fade out (0 = never).
   # They come back when the streamer stops crouching.
