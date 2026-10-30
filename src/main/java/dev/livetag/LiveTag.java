@@ -20,6 +20,10 @@ import org.bukkit.util.Vector;
 import org.bukkit.GameMode;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
+import org.bukkit.Tag;
+import org.bukkit.block.Block;
+import org.bukkit.block.data.Waterlogged;
+import org.bukkit.SoundCategory;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
@@ -109,6 +113,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private static final int FOLLOW_SLOT = 15;
 
     private static final Pattern LOGIN_RULE = Pattern.compile("^[A-Za-z0-9_]{3,25}$");
+    private static final Pattern NAME_JSON = Pattern.compile(
+            "\"user_login\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"user_name\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern LOGIN_JSON = Pattern.compile("\"user_login\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern TOKEN_JSON = Pattern.compile("\"access_token\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern EXPIRES_JSON = Pattern.compile("\"expires_in\"\\s*:\\s*(\\d+)");
@@ -149,6 +155,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     /** Streamers who have been live on Twitch at least once - only they get a mascot. */
     private final Set<UUID> streamed = new HashSet<>();
     private final Set<UUID> idleDead = new HashSet<>(); // mascots that died from the streamer being offline too long
+    private final Map<String, String> twitchNames = new ConcurrentHashMap<>(); // login -> Twitch display name
     private final Map<UUID, Long> lastLive = new ConcurrentHashMap<>(); // when each streamer was last seen live
     private final Map<UUID, Home> homes = new ConcurrentHashMap<>();
     /** Armour pieces a streamer has put on their mascot (replaces the default coloured outfit). */
@@ -244,6 +251,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 idleDead.add(UUID.fromString(s2));
             } catch (IllegalArgumentException ignored) {
             }
+        }
+        ConfigurationSection tn = yml.getConfigurationSection("twitch-names");
+        if (tn != null) {
+            for (String key : tn.getKeys(false)) twitchNames.put(key, tn.getString(key, key));
         }
         ConfigurationSection ll = yml.getConfigurationSection("last-live");
         if (ll != null) {
@@ -379,6 +390,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         yml.set("mascot-off", mascotOff.stream().map(UUID::toString).toList());
         yml.set("stay", stay.stream().map(UUID::toString).toList());
         yml.set("streamed", streamed.stream().map(UUID::toString).toList());
+        for (Map.Entry<String, String> en : twitchNames.entrySet()) yml.set("twitch-names." + en.getKey(), en.getValue());
         yml.set("idle-dead", idleDead.stream().map(UUID::toString).toList());
         for (Map.Entry<UUID, Long> en : lastLive.entrySet()) yml.set("last-live." + en.getKey(), en.getValue());
         for (Map.Entry<UUID, Map<EquipmentSlot, ItemStack>> en : customArmor.entrySet()) {
@@ -566,13 +578,22 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     getLogger().warning("Twitch API returned HTTP " + res.statusCode());
                     return;
                 }
+                Matcher nm = NAME_JSON.matcher(res.body());
+                while (nm.find()) {
+                    String lg = nm.group(1).toLowerCase(Locale.ROOT);
+                    liveLogins.add(lg);
+                    if (!nm.group(2).isBlank() && !nm.group(2).equals(twitchNames.put(lg, nm.group(2)))) dataDirty = true;
+                }
                 Matcher m = LOGIN_JSON.matcher(res.body());
                 while (m.find()) {
                     liveLogins.add(m.group(1).toLowerCase(Locale.ROOT));
                 }
             }
 
-            Bukkit.getScheduler().runTask(this, () -> applyTwitchResults(liveLogins));
+            Bukkit.getScheduler().runTask(this, () -> {
+                for (Mascot mm : mascots.values()) mm.nameDirty = true; // pick up display names
+                applyTwitchResults(liveLogins);
+            });
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception e) {
@@ -982,6 +1003,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         int stuck;
         long lastRegenFx;
         long lastSound;
+        double stopDist = 2.5; // how close it walks to its goal
+        double vy; // vertical speed while falling
+        double fallDist; // blocks fallen so far
+        int seekTicks; // how long it has been trying to reach a ladder
+        long partyUntil; // jumps on the spot until this time (Twitch events)
+        double kx; // knockback speed (decays every tick)
+        double kz;
         boolean leather = true; // wearing the default coloured leather outfit (no coloured skin)
         long lastDamage;
         long lastRegen;
@@ -1152,6 +1180,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
         Set<UUID> present = new HashSet<>();
         Set<String> channels = new HashSet<>();
+        boolean offlineChat = getConfig().getBoolean("mascot.offline-chat", true);
         for (UUID id : new ArrayList<>(wanted)) {
             Player p = Bukkit.getPlayer(id);
             if (deadSince.containsKey(id) && graves.get(id) == null) { // dead with no grave spot: would stay invisible
@@ -1236,16 +1265,17 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 updateNameplate(m.body, id, m.rgb, isLive);
             }
             handleBoat(m, id, p);
-            boolean walk = !grave && (leashed != null || (p != null && !stay.contains(id)));
-            if (walk && !m.body.isInsideVehicle()) {
-                // walks up to its goal in walkTick (every tick) instead of snapping next to the player
-                m.walkGoal = leashed != null ? leashed : p.getLocation();
+            if (!grave && !m.body.isInsideVehicle()) {
+                // walkTick (every tick) walks it to its goal, handles gravity and fall damage
+                boolean staying = leashed == null && stay.contains(id);
+                m.walkGoal = leashed != null ? leashed : staying ? target : p.getLocation();
+                m.stopDist = staying ? 0.3 : getConfig().getDouble("mascot.follow-distance", 2.5);
             } else {
                 m.walkGoal = null;
                 moveMascot(m, target);
             }
             renderBoard(m, now);
-            if (m.login != null && twitchLive.contains(id)) channels.add(m.login);
+            if (m.login != null && (offlineChat || twitchLive.contains(id))) channels.add(m.login);
         }
 
         // 3. remove mascots that should not exist (disabled, or follower whose owner left)
@@ -1269,6 +1299,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     }
 
     private void routeChat(TwitchChat.Message msg, long now) {
+        if (msg.event() != null) {
+            handleTwitchEvent(msg, now);
+            return;
+        }
         String name = msg.name().replaceAll("\\p{Cntrl}", "").trim();
         if (name.length() > 25) name = name.substring(0, 25);
         String text = cleanMessage(msg.text(), name);
@@ -1282,6 +1316,77 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 addLine(m, bubbleLine(name, text, m.rgb), now + ttl, max);
                 playChatSound(m, text, now);
             }
+        }
+    }
+
+    /** A sub, resub, gift, raid or cheer: shown on the board, with a sound, particles and a note to the streamer. */
+    private void handleTwitchEvent(TwitchChat.Message msg, long now) {
+        ConfigurationSection cs = getConfig().getConfigurationSection("mascot.events");
+        if (cs != null && !cs.getBoolean("enabled", true)) return;
+        String type = msg.event();
+        if (type.equals("cheer") && msg.amount() < (cs == null ? 100 : cs.getInt("cheer-min-bits", 100))) return;
+        long ttl = (cs == null ? 40L : cs.getLong("show-seconds", 40L)) * 1000L;
+        int max = Math.max(1, getConfig().getInt("mascot.max-lines", 5));
+
+        NamedTextColor col;
+        String icon;
+        String soundKey;
+        Particle particle;
+        switch (type) {
+            case "raid" -> {
+                col = NamedTextColor.RED;
+                icon = "\u26A1 ";
+                soundKey = "raid";
+                particle = Particle.FLAME;
+            }
+            case "subgift", "submysterygift" -> {
+                col = NamedTextColor.LIGHT_PURPLE;
+                icon = "\uD83C\uDF81 ";
+                soundKey = "gift";
+                particle = Particle.HEART;
+            }
+            case "cheer" -> {
+                col = NamedTextColor.AQUA;
+                icon = "\u25C6 ";
+                soundKey = "cheer";
+                particle = Particle.NOTE;
+            }
+            default -> {
+                col = NamedTextColor.GOLD;
+                icon = "\u2605 ";
+                soundKey = type; // sub / resub
+                particle = Particle.HEART;
+            }
+        }
+        Component line = Component.text(icon + msg.text(), col, TextDecoration.BOLD);
+        String defaultSound = switch (soundKey) {
+            case "raid" -> "entity.ender_dragon.growl";
+            case "gift" -> "entity.player.levelup";
+            case "cheer" -> "entity.experience_orb.pickup";
+            default -> "entity.player.levelup";
+        };
+        String sound = cs == null ? defaultSound : cs.getString("sounds." + soundKey, defaultSound);
+
+        for (Mascot m : mascots.values()) {
+            if (m.isGrave || m.login == null || !m.login.equals(msg.channel())) continue;
+            addLine(m, line, now + ttl, max);
+            if (cs == null || cs.getDouble("jump-seconds", 8.0) > 0) {
+                m.partyUntil = Math.max(m.partyUntil, now + (long) ((cs == null ? 8.0 : cs.getDouble("jump-seconds", 8.0)) * 1000L));
+            }
+            if (m.body != null && m.body.isValid()) {
+                Location at = m.body.getLocation();
+                if (sound != null && !sound.isBlank()) {
+                    at.getWorld().playSound(at, sound.trim(), SoundCategory.NEUTRAL, 1f, 1f);
+                }
+                at.getWorld().spawnParticle(particle, at.clone().add(0, 1.4, 0), 25, 0.5, 0.6, 0.5, 0.02);
+            }
+            Player owner = Bukkit.getPlayer(m.owner);
+            if (owner != null && (cs == null || cs.getBoolean("notify-streamer", true))) {
+                owner.sendActionBar(Component.text(icon + msg.text(), col));
+            }
+        }
+        if (cs != null && cs.getBoolean("broadcast", false)) {
+            Bukkit.broadcast(Component.text(icon + msg.text(), col));
         }
     }
 
@@ -1371,47 +1476,251 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return out;
     }
 
-    /** Every tick: the mascot walks after the person it follows, like a normal mob. */
+    /** Hurts the mascot without an event (fall damage). Kills it if its health runs out. */
+    private void hurtMascot(Mascot m, double dmg, String why) {
+        if (dmg <= 0 || m.isGrave || m.body == null || !getConfig().getBoolean("mascot.can-be-killed", true)) return;
+        UUID id = m.owner;
+        double left = hp(id) - dmg;
+        m.lastDamage = System.currentTimeMillis();
+        m.nameDirty = true;
+        dataDirty = true;
+        m.body.playHurtAnimation(0f);
+        m.body.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, 1f, 1f);
+        if (left <= 0) killMascot(m, null, why);
+        else hpMap.put(id, left);
+    }
+
+    /** The ground level below a point (or the point itself if there is nothing within 64 blocks). */
+    private Location groundAt(Location at) {
+        World w = at.getWorld();
+        Location out = at.clone();
+        if (w == null) return out;
+        RayTraceResult r = w.rayTraceBlocks(at.clone().add(0, 1.0, 0), new Vector(0, -1, 0), 64.0,
+                FluidCollisionMode.NEVER, true);
+        if (r != null) out.setY(r.getHitPosition().getY());
+        out.setPitch(0f);
+        return out;
+    }
+
+    private static boolean isClimbable(Block b) {
+        return Tag.CLIMBABLE.isTagged(b.getType());
+    }
+
+    private static boolean isWater(Block b) {
+        Material t = b.getType();
+        if (t == Material.WATER || t == Material.BUBBLE_COLUMN || t == Material.KELP || t == Material.KELP_PLANT
+                || t == Material.SEAGRASS || t == Material.TALL_SEAGRASS) {
+            return true;
+        }
+        return b.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged();
+    }
+
+    /** The nearest ladder or vine within 2 blocks (centre of its cell), or null. */
+    private Location findLadder(World w, Location at) {
+        int bx = at.getBlockX();
+        int by = (int) Math.floor(at.getY() + 0.1);
+        int bz = at.getBlockZ();
+        Location best = null;
+        double bestD = Double.MAX_VALUE;
+        for (int x = -2; x <= 2; x++) {
+            for (int z = -2; z <= 2; z++) {
+                for (int y = 0; y <= 1; y++) {
+                    if (!isClimbable(w.getBlockAt(bx + x, by + y, bz + z))) continue;
+                    double d = x * x + z * z;
+                    if (d < bestD) {
+                        bestD = d;
+                        best = new Location(w, bx + x + 0.5, by + y, bz + z + 0.5);
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Every tick: the mascot walks to its goal, swims, climbs ladders and vines, falls with gravity
+     * and takes fall damage.
+     */
     private void walkTick() {
-        double stop = getConfig().getDouble("mascot.follow-distance", 2.5);
         double boardHeight = boardHeight();
         for (Mascot m : mascots.values()) {
             Location goal = m.walkGoal;
             if (goal == null || m.isGrave || m.body == null || !m.body.isValid() || m.body.isInsideVehicle()) continue;
             Location cur = m.body.getLocation();
             World w = cur.getWorld();
-            if (w == null || goal.getWorld() != w) continue;
+            if (w == null) continue;
 
-            Location next;
+            boolean follow = m.stopDist > 1.0;
             double dx = goal.getX() - cur.getX();
             double dz = goal.getZ() - cur.getZ();
             double dist = Math.hypot(dx, dz);
-            if (dist > 20 || Math.abs(goal.getY() - cur.getY()) > 6 || m.stuck > 40) {
-                next = goal.clone(); // too far away or stuck: catch up instantly
+            double dy = goal.getY() - cur.getY();
+
+            int bx = cur.getBlockX();
+            int bz = cur.getBlockZ();
+            int fy = (int) Math.floor(cur.getY() + 0.1);
+            boolean onLadder = isClimbable(w.getBlockAt(bx, fy, bz));
+            boolean inWater = isWater(w.getBlockAt(bx, (int) Math.floor(cur.getY() + 0.3), bz));
+            boolean headWater = isWater(w.getBlockAt(bx, (int) Math.floor(cur.getY() + 1.0), bz));
+
+            // a ladder can get it up a tall wall instead of teleporting
+            Location ladder = null;
+            if (follow && !onLadder && dy > 1.8 && dist <= 20) ladder = findLadder(w, cur);
+            boolean climbTrip = follow && dist <= 20 && dy > 3.5 && dy <= 40 && (onLadder || ladder != null)
+                    && m.seekTicks < 600;
+            if (dy > 1.8) m.seekTicks++; else m.seekTicks = 0;
+
+            Location next;
+            boolean snapped = false;
+            if (goal.getWorld() != w || (follow && !climbTrip && (dist > 20 || Math.abs(dy) > 3.5)) || m.stuck > 40) {
+                next = follow || goal.getWorld() != w ? groundAt(goal) : goal.clone(); // catch up instantly, on the ground
                 next.setPitch(0f);
                 m.stuck = 0;
+                m.vy = 0;
+                m.fallDist = 0;
+                m.seekTicks = 0;
+                snapped = true;
             } else {
                 next = cur.clone();
-                if (dist > 0.05) next.setYaw((float) Math.toDegrees(Math.atan2(-dx, dz)));
                 next.setPitch(0f);
-                if (dist > stop) {
-                    double speed = dist > 8 ? 0.42 : 0.26; // runs when far behind
-                    next.add(dx / dist * speed, 0, dz / dist * speed);
-                    RayTraceResult r = w.rayTraceBlocks(next.clone().add(0, 1.3, 0), new Vector(0, -1, 0), 3.0,
-                            FluidCollisionMode.NEVER, true);
-                    double ny = r != null ? r.getHitPosition().getY() : cur.getY() - 0.4;
-                    if (ny - cur.getY() > 1.1) { // a wall: wait, and catch up if it stays stuck
-                        m.stuck++;
-                        next = cur.clone();
-                        next.setYaw((float) Math.toDegrees(Math.atan2(-dx, dz)));
-                    } else {
-                        m.stuck = 0;
-                        next.setY(ny);
+                if (dist > 0.05) next.setYaw((float) Math.toDegrees(Math.atan2(-dx, dz)));
+
+                // --- horizontal movement
+                double mx = 0;
+                double mz = 0;
+                double speed = inWater ? 0.14 : (dist > 8 ? 0.42 : 0.26); // slower when swimming, runs when far behind
+                if (ladder != null) {
+                    double lx = ladder.getX() - cur.getX();
+                    double lz = ladder.getZ() - cur.getZ();
+                    double ld = Math.hypot(lx, lz);
+                    if (ld > 0.12) {
+                        double st = Math.min(ld, 0.2);
+                        mx = lx / ld * st;
+                        mz = lz / ld * st;
                     }
-                } else {
-                    m.stuck = 0;
-                    if (Math.abs(next.getYaw() - cur.getYaw()) < 2f) continue; // standing still and already facing you
+                } else if (dist > m.stopDist) {
+                    double st = Math.min(dist - m.stopDist + 0.05, speed);
+                    mx = dx / dist * st;
+                    mz = dz / dist * st;
                 }
+
+                // --- vertical movement
+                double newY = cur.getY();
+                boolean special = false;
+                if (onLadder) {
+                    special = true;
+                    m.vy = 0;
+                    m.fallDist = 0;
+                    if (dy > 0.6) {
+                        newY += 0.12; // climb up
+                        mx = 0;
+                        mz = 0;
+                        if (!isClimbable(w.getBlockAt(bx, fy + 1, bz)) && dist > 0.05) { // top of the ladder: step off
+                            mx = dx / dist * 0.2;
+                            mz = dz / dist * 0.2;
+                        }
+                    } else if (dy < -0.6) {
+                        newY -= 0.12; // climb down
+                        mx = 0;
+                        mz = 0;
+                    } else if (dist > 0.05) { // same height: leave the ladder toward the goal
+                        mx = dx / dist * 0.2;
+                        mz = dz / dist * 0.2;
+                    }
+                } else if (inWater) {
+                    special = true;
+                    m.vy = 0;
+                    m.fallDist = 0;
+                    if (dy < -1.5) newY -= 0.08; // dive after someone who is deeper
+                    else if (headWater) newY += 0.1; // float up to the surface
+                }
+                boolean partying = System.currentTimeMillis() < m.partyUntil;
+                if (partying) { // celebrating: stay on the spot
+                    mx = 0;
+                    mz = 0;
+                }
+
+                // --- pushing: players walking into it, and knockback from hits
+                boolean pushed = false;
+                if (getConfig().getBoolean("mascot.pushable", true)) {
+                    for (Player pl : w.getNearbyPlayers(cur, 0.9)) {
+                        if (pl.getGameMode() == GameMode.SPECTATOR || Math.abs(pl.getLocation().getY() - cur.getY()) > 1.8) continue;
+                        double px = cur.getX() - pl.getLocation().getX();
+                        double pz = cur.getZ() - pl.getLocation().getZ();
+                        double pd = Math.hypot(px, pz);
+                        if (pd >= 0.85) continue;
+                        if (pd < 0.01) {
+                            double ang = ThreadLocalRandom.current().nextDouble(Math.PI * 2);
+                            px = Math.cos(ang);
+                            pz = Math.sin(ang);
+                            pd = 1.0;
+                        }
+                        double push = Math.min(0.15, (0.85 - pd) * 0.5);
+                        mx += px / pd * push;
+                        mz += pz / pd * push;
+                        pushed = true;
+                    }
+                    if (Math.abs(m.kx) > 0.01 || Math.abs(m.kz) > 0.01) {
+                        mx += m.kx;
+                        mz += m.kz;
+                        m.kx *= 0.7;
+                        m.kz *= 0.7;
+                        pushed = true;
+                    } else {
+                        m.kx = 0;
+                        m.kz = 0;
+                    }
+                }
+                next.add(mx, 0, mz);
+
+                // --- ground below the new spot
+                double reach = 1.4 + Math.max(0.0, -m.vy);
+                RayTraceResult r = w.rayTraceBlocks(next.clone().add(0, 1.3, 0), new Vector(0, -1, 0), reach,
+                        FluidCollisionMode.NEVER, true);
+                if (r != null && r.getHitPosition().getY() - cur.getY() > 1.1 && (mx != 0 || mz != 0)) {
+                    m.stuck++; // a wall in the way: stay put, and catch up if it stays stuck
+                    next.setX(cur.getX());
+                    next.setZ(cur.getZ());
+                    r = w.rayTraceBlocks(next.clone().add(0, 1.3, 0), new Vector(0, -1, 0), reach,
+                            FluidCollisionMode.NEVER, true);
+                } else if (mx != 0 || mz != 0) {
+                    m.stuck = 0;
+                }
+                double groundY = r != null ? r.getHitPosition().getY() : Double.NaN;
+                if (pushed && !follow) { // a mascot that stays keeps the spot it was pushed to
+                    Location home = next.clone();
+                    m.walkGoal = home;
+                    homes.put(m.owner, Home.of(home));
+                    dataDirty = true;
+                }
+
+                if (partying && !special && m.vy == 0 && !Double.isNaN(groundY) && cur.getY() - groundY < 0.06) {
+                    m.vy = 0.42; // hop
+                }
+                if (special) {
+                    if (!Double.isNaN(groundY) && newY < groundY) newY = groundY;
+                    next.setY(newY);
+                } else if (!Double.isNaN(groundY) && cur.getY() + m.vy <= groundY + 0.001) {
+                    // on the ground (or landing on it)
+                    double fallen = m.fallDist;
+                    next.setY(groundY);
+                    m.vy = 0;
+                    m.fallDist = 0;
+                    if (fallen > 3.0) hurtMascot(m, Math.floor(fallen - 3.0), "Fell from a high place");
+                    if (!m.body.isValid()) continue; // it died from the fall
+                } else {
+                    m.vy = (m.vy - 0.08) * 0.98;
+                    if (m.vy < -3.0) m.vy = -3.0;
+                    next.setY(cur.getY() + m.vy);
+                    if (m.vy < 0) m.fallDist += -m.vy;
+                    if (next.getY() < w.getMinHeight() - 10) { // fell out of the world
+                        next = groundAt(goal);
+                        m.vy = 0;
+                        m.fallDist = 0;
+                        snapped = true;
+                    }
+                }
+                if (!snapped && next.distanceSquared(cur) < 1.0E-6 && Math.abs(next.getYaw() - cur.getYaw()) < 2f) continue;
             }
             m.body.teleport(next);
             if (m.board != null && m.board.isValid()) m.board.teleport(next.clone().add(0, boardHeight, 0));
@@ -1440,7 +1749,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     /** Short name tag: just the streamer's name (with a red dot while they are live). */
     private Component mascotName(UUID id, int rgb, boolean live) {
-        String name = Bukkit.getOfflinePlayer(id).getName();
+        String name = null;
+        String login = links.get(id);
+        if (login != null && !"minecraft".equalsIgnoreCase(getConfig().getString("mascot.name-source", "twitch"))) {
+            name = twitchNames.getOrDefault(login.toLowerCase(Locale.ROOT), login); // the Twitch channel name
+        }
+        if (name == null) name = Bukkit.getOfflinePlayer(id).getName();
         if (name == null) name = "Streamer";
         Component n = Component.text(name, TextColor.color(rgb));
         return live ? Component.text("\u25CF ", NamedTextColor.RED).append(n) : n;
@@ -1787,6 +2101,17 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         m.lastDamage = System.currentTimeMillis();
         m.nameDirty = true;
         dataDirty = true;
+        if (e instanceof EntityDamageByEntityEvent hitBy && getConfig().getBoolean("mascot.pushable", true)) {
+            Location from = hitBy.getDamager().getLocation();
+            double kdx = m.body.getLocation().getX() - from.getX();
+            double kdz = m.body.getLocation().getZ() - from.getZ();
+            double kd = Math.hypot(kdx, kdz);
+            if (kd > 0.01) {
+                m.kx = kdx / kd * 0.4;
+                m.kz = kdz / kd * 0.4;
+                if (m.vy <= 0) m.vy = 0.25; // small hop
+            }
+        }
         m.body.playHurtAnimation(0f);
         m.body.getWorld().spawnParticle(Particle.DAMAGE_INDICATOR,
                 m.body.getLocation().add(0, 1.2, 0), 6, 0.3, 0.3, 0.3);
@@ -2432,7 +2757,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     /** Reads Twitch chat over IRC without logging in. */
     static final class TwitchChat {
-        record Message(String channel, String name, String text) {
+        /** event == null: a normal chat message. Otherwise a Twitch event (sub, resub, subgift, submysterygift, raid, cheer). */
+        record Message(String channel, String name, String text, String event, int amount) {
         }
 
         private final java.util.Queue<Message> inbox = new java.util.concurrent.ConcurrentLinkedQueue<>();
@@ -2520,7 +2846,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                         socket = s;
                         out = new BufferedWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8));
                         joined.clear();
-                        send("CAP REQ :twitch.tv/tags");
+                        send("CAP REQ :twitch.tv/tags twitch.tv/commands");
                         send("PASS SCHMOOPIIE");
                         send("NICK justinfan" + (10000 + new Random().nextInt(80000)));
                     }
@@ -2564,6 +2890,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 tags = rest.substring(1, sp);
                 rest = rest.substring(sp + 1);
             }
+            int un = rest.indexOf(" USERNOTICE #");
+            if (un >= 0) {
+                handleNotice(tags, rest, un);
+                return;
+            }
             int pm = rest.indexOf(" PRIVMSG #");
             if (pm < 0) return;
 
@@ -2582,14 +2913,85 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             String text = rest.substring(textStart + 2);
 
             String display = nick;
+            int bits = 0;
             for (String tag : tags.split(";")) {
                 if (tag.startsWith("display-name=") && tag.length() > 13) {
-                    display = tag.substring(13);
-                    break;
+                    display = unescape(tag.substring(13));
+                } else if (tag.startsWith("bits=")) {
+                    try {
+                        bits = Integer.parseInt(tag.substring(5));
+                    } catch (NumberFormatException ignored) {
+                    }
                 }
             }
             if (inbox.size() > 500) inbox.poll();
-            inbox.add(new Message(channel, display, text));
+            inbox.add(new Message(channel, display, text, null, 0));
+            if (bits > 0) {
+                inbox.add(new Message(channel, display, display + " cheered " + bits + " bits", "cheer", bits));
+            }
+        }
+
+        private static String unescape(String v) {
+            return v.replace("\\s", " ").replace("\\:", ";").replace("\\r", "").replace("\\n", " ").replace("\\\\", "\\");
+        }
+
+        private static String clean(String v) {
+            String t = v.replaceAll("\\p{Cntrl}", " ").trim();
+            return t.length() > 40 ? t.substring(0, 40) : t;
+        }
+
+        /** Subs, resubs, gifts and raids arrive as USERNOTICE lines. */
+        private void handleNotice(String tags, String rest, int un) {
+            int chanStart = un + " USERNOTICE #".length();
+            int chanEnd = rest.indexOf(' ', chanStart);
+            String channel = (chanEnd < 0 ? rest.substring(chanStart) : rest.substring(chanStart, chanEnd))
+                    .toLowerCase(Locale.ROOT);
+            java.util.Map<String, String> t = new java.util.HashMap<>();
+            for (String tag : tags.split(";")) {
+                int eq = tag.indexOf('=');
+                if (eq > 0) t.put(tag.substring(0, eq), unescape(tag.substring(eq + 1)));
+            }
+            String id = t.getOrDefault("msg-id", "");
+            String name = clean(t.getOrDefault("display-name", t.getOrDefault("login", "Someone")));
+            if (name.isEmpty()) name = "Someone";
+            String text;
+            int amount = 0;
+            switch (id) {
+                case "sub" -> {
+                    String plan = t.getOrDefault("msg-param-sub-plan", "");
+                    text = name + " subscribed" + (plan.equals("Prime") ? " with Prime" : "");
+                }
+                case "resub" -> {
+                    String months = t.getOrDefault("msg-param-cumulative-months", "");
+                    text = name + " resubscribed" + (months.isEmpty() ? "" : " for " + clean(months) + " months");
+                }
+                case "subgift" -> {
+                    if (t.containsKey("msg-param-community-gift-id")) return; // part of a community gift, counted once
+                    String to = clean(t.getOrDefault("msg-param-recipient-display-name", "someone"));
+                    text = name + " gifted a sub to " + to;
+                }
+                case "submysterygift" -> {
+                    try {
+                        amount = Integer.parseInt(t.getOrDefault("msg-param-mass-gift-count", "1"));
+                    } catch (NumberFormatException e) {
+                        amount = 1;
+                    }
+                    text = name + " gifted " + amount + " subs to the community";
+                }
+                case "raid" -> {
+                    try {
+                        amount = Integer.parseInt(t.getOrDefault("msg-param-viewerCount", "0"));
+                    } catch (NumberFormatException e) {
+                        amount = 0;
+                    }
+                    text = clean(t.getOrDefault("msg-param-displayName", name)) + " raided with " + amount + " viewers";
+                }
+                default -> {
+                    return;
+                }
+            }
+            if (inbox.size() > 500) inbox.poll();
+            inbox.add(new Message(channel, name, text, id, amount));
         }
     }
 }
