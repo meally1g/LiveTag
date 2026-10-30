@@ -146,7 +146,9 @@ mascot:
   come-when-live: true      # the mascot jumps to its streamer (and follows again) when the stream starts
   pushable: true            # players can push it by walking into it, and hits knock it back
   name-source: twitch       # twitch = the name above the mascot is the Twitch channel name; minecraft = the in-game name
-  teleport-delay-seconds: 1.5 # when it is too far away it charges up for this long (with ender particles) before teleporting (0 = instant)
+  teleport-distance: 12     # it teleports to you when it is this many blocks away (a dog does it at 12)
+  teleport-delay-seconds: 3   # when it is too far away it charges up this long (with ender particles) before teleporting (0 = instant)
+  crouch-after-seconds: 2   # it crouches when its owner has crouched this long (-1 = never)
   follow-distance: 2.5      # how close the mascot walks to you before it stops
   scale: 0.7                # mascot size (1.0 = same as a player)
   inactivity-death-hours: 48 # mascot dies if its streamer hasn't been live this long (0 = off)
