@@ -1014,7 +1014,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return subs;
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("mascot")) {
-            return List.of("on", "off", "follow", "here", "preview", "revive", "color", "give", "debug", "test");
+            return List.of("on", "off", "follow", "here", "preview", "revive", "color", "give", "debug", "test", "baby");
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("mascot")
                 && (args[1].equalsIgnoreCase("color") || args[1].equalsIgnoreCase("revive") || args[1].equalsIgnoreCase("give"))
@@ -2112,6 +2112,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             p.sendActionBar(Component.text("Your mascot already has a baby.", NamedTextColor.GRAY));
             return;
         }
+        if (!links.containsKey(m.owner)) {
+            p.sendActionBar(Component.text("Only streamers with a linked Twitch can breed.", NamedTextColor.RED));
+            return;
+        }
         takeOne(p, hand);
         long secs = getConfig().getLong("mascot.breeding.love-seconds", 30L);
         inLove.put(m.owner, System.currentTimeMillis() + secs * 1000L);
@@ -2184,7 +2188,6 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 EntityEquipment eq = e.getEquipment();
                 if (eq != null) {
                     eq.setChestplate(dyed(Material.LEATHER_CHESTPLATE, Color.fromRGB(rgb)));
-                    for (EquipmentSlot slot : EquipmentSlot.values()) eq.setDropChance(slot, 0f);
                 }
             });
             m.board = w.spawn(base.clone().add(0, boardHeight() * factor, 0), TextDisplay.class, t -> {
@@ -2205,6 +2208,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             });
         } catch (Exception ex) {
             getLogger().warning("Could not spawn a baby mascot: " + ex);
+            for (Player adm : Bukkit.getOnlinePlayers()) {
+                if (adm.hasPermission("livetag.admin")) {
+                    adm.sendMessage(Component.text("[LiveTag] Baby spawn error: " + ex, NamedTextColor.RED));
+                }
+            }
             m.remove();
             return null;
         }
@@ -2219,7 +2227,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             double maxDist = getConfig().getDouble("mascot.breeding.max-distance", 4.5);
             List<Mascot> loving = new ArrayList<>();
             for (Mascot m : mascots.values()) {
-                if (m.isGrave || !m.valid() || !inLove.containsKey(m.owner) || hasBaby(m.owner)) continue;
+                if (m.isGrave || !m.valid() || !links.containsKey(m.owner) || !inLove.containsKey(m.owner) || hasBaby(m.owner)) continue;
                 loving.add(m);
                 m.body.getWorld().spawnParticle(Particle.HEART, m.body.getLocation().add(0, 1.3, 0), 1, 0.3, 0.2, 0.3, 0);
             }
@@ -2262,6 +2270,30 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 continue;
             }
 
+            try {
+                tickOneBaby(b, now, channels, offlineChat);
+            } catch (Exception ex) {
+                reportBabyError(ex);
+            }
+        }
+    }
+
+    private boolean babyErrorShown;
+
+    private void reportBabyError(Exception ex) {
+        getLogger().warning("Baby mascot error: " + ex);
+        ex.printStackTrace();
+        if (babyErrorShown) return;
+        babyErrorShown = true;
+        for (Player adm : Bukkit.getOnlinePlayers()) {
+            if (adm.hasPermission("livetag.admin")) {
+                adm.sendMessage(Component.text("[LiveTag] Baby error: " + ex, NamedTextColor.RED));
+            }
+        }
+    }
+
+    private void tickOneBaby(Baby b, long now, Set<String> channels, boolean offlineChat) {
+        {
             Player pa = Bukkit.getPlayer(b.a());
             Player pb = Bukkit.getPlayer(b.b());
             Mascot m = babyMascots.get(b.id());
@@ -2270,7 +2302,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     discard(m);
                     babyMascots.remove(b.id());
                 }
-                continue;
+                return;
             }
             Player near = pa != null ? pa : pb;
             if (pa != null && pb != null) {
@@ -2283,9 +2315,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (m == null || !m.valid()) {
                 if (m != null) discard(m);
                 Location spawn = mascotLocation(near);
-                if (!spawn.getWorld().isChunkLoaded(spawn.getBlockX() >> 4, spawn.getBlockZ() >> 4)) continue;
+                if (!spawn.getWorld().isChunkLoaded(spawn.getBlockX() >> 4, spawn.getBlockZ() >> 4)) return;
                 m = createBaby(b, spawn);
-                if (m == null) continue;
+                if (m == null) return;
                 babyMascots.put(b.id(), m);
             }
             m.login = links.get(b.a());
@@ -2618,6 +2650,42 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         saveData();
         p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1f, 0.8f);
         p.sendActionBar(Component.text("You took the item back.", NamedTextColor.GRAY));
+    }
+
+    /** A mascot holding a Totem of Undying pops it to save its streamer from a deadly hit. */
+    @EventHandler(priority = org.bukkit.event.EventPriority.HIGH, ignoreCancelled = true)
+    public void onOwnerFatalDamage(EntityDamageEvent e) {
+        if (!(e.getEntity() instanceof Player p)) return;
+        if (!getConfig().getBoolean("mascot.totem-save", true)) return;
+        if (p.getHealth() - e.getFinalDamage() > 0) return;
+        Mascot m = mascots.get(p.getUniqueId());
+        if (m == null || m.isGrave || m.body == null || !m.body.isValid()) return;
+        Map<EquipmentSlot, ItemStack> mine = customArmor.get(p.getUniqueId());
+        ItemStack held = mine == null ? null : mine.get(EquipmentSlot.HAND);
+        if (held == null || held.getType() != Material.TOTEM_OF_UNDYING) return;
+        // the player's own totem works first, like normal
+        if (p.getInventory().getItemInMainHand().getType() == Material.TOTEM_OF_UNDYING
+                || p.getInventory().getItemInOffHand().getType() == Material.TOTEM_OF_UNDYING) return;
+        if (m.body.getWorld() != p.getWorld()
+                || m.body.getLocation().distance(p.getLocation()) > getConfig().getDouble("mascot.totem-range", 40.0)) return;
+
+        e.setCancelled(true);
+        mine.remove(EquipmentSlot.HAND);
+        if (mine.isEmpty()) customArmor.remove(p.getUniqueId());
+        EntityEquipment eq = m.body.getEquipment();
+        if (eq != null) eq.setItemInMainHand(new ItemStack(Material.AIR));
+        p.setHealth(1.0);
+        p.clearActivePotionEffects();
+        p.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, 900, 1));
+        p.addPotionEffect(new PotionEffect(PotionEffectType.ABSORPTION, 100, 1));
+        p.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, 800, 0));
+        Location at = p.getLocation().add(0, 1, 0);
+        at.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at, 60, 0.4, 0.7, 0.4, 0.4);
+        Location at2 = m.body.getLocation().add(0, 1, 0);
+        at2.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at2, 30, 0.3, 0.5, 0.3, 0.3);
+        at.getWorld().playSound(at, Sound.ITEM_TOTEM_USE, SoundCategory.PLAYERS, 1f, 1f);
+        p.sendActionBar(Component.text("Your mascot popped its totem and saved you!", NamedTextColor.GOLD));
+        saveData();
     }
 
     /** Healing from potions (instant health) goes into the mascot's own health, not the hidden real one. */
@@ -3031,6 +3099,35 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         UUID id = p.getUniqueId();
         String action = args.length > 1 ? args[1].toLowerCase(Locale.ROOT) : "toggle";
+
+        if (action.equals("baby")) { // staff test: a baby of you and yourself
+            if (!p.hasPermission("livetag.admin")) {
+                p.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+                return;
+            }
+            if (!links.containsKey(id)) {
+                p.sendMessage(Component.text("Link your Twitch first (the baby needs a channel).", NamedTextColor.RED));
+                return;
+            }
+            if (hasBaby(id)) {
+                for (Baby bb2 : new ArrayList<>(babies.values())) {
+                    if (bb2.a().equals(id) || bb2.b().equals(id)) {
+                        Mascot old = babyMascots.remove(bb2.id());
+                        if (old != null) discard(old);
+                        babies.remove(bb2.id());
+                    }
+                }
+                dataDirty = true;
+                p.sendMessage(Component.text("Test baby removed.", NamedTextColor.GRAY));
+                return;
+            }
+            UUID bid2 = UUID.randomUUID();
+            babies.put(bid2, new Baby(bid2, id, id, System.currentTimeMillis()));
+            dataDirty = true;
+            tickMascots();
+            p.sendMessage(Component.text("Test baby spawned. Run /live mascot baby again to remove it.", NamedTextColor.LIGHT_PURPLE));
+            return;
+        }
 
         if (action.equals("preview")) {
             if (!p.hasPermission("livetag.admin")) {
