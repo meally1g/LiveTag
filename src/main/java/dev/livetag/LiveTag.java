@@ -237,7 +237,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("live").setExecutor(this);
         getCommand("live").setTabCompleter(this);
-        ensureCommand("mascot", "Staff tools for chat mascots (locate)", "/mascot locate [player]", "livetag.admin");
+        ensureCommand("mascot", "Find your mascot's grave (staff: locate any mascot)", "/mascot grave", null);
         ensureCommand("streamers", "Shows every linked streamer, their Twitch and whether they are live",
                 "/streamers", null);
 
@@ -880,13 +880,48 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     }
 
     /** /mascot locate [player]  (staff): where is somebody's mascot? Clickable coordinates. */
+    /** /mascot grave  (any streamer): where is MY mascot's grave? Plain coordinates only - no teleport link. */
+    private void mascotGrave(CommandSender sender) {
+        if (!(sender instanceof Player p)) {
+            sender.sendMessage("Players only.");
+            return;
+        }
+        UUID id = p.getUniqueId();
+        if (!links.containsKey(id)) {
+            p.sendMessage(Component.text("You have no mascot (your Twitch isn't linked).", NamedTextColor.GRAY));
+            return;
+        }
+        Home g = graves.get(id);
+        if (!deadSince.containsKey(id) || g == null || g.toLocation().getWorld() == null) {
+            p.sendMessage(Component.text("Your mascot is alive - there is no grave.", NamedTextColor.GRAY));
+            return;
+        }
+        Location gl = g.toLocation();
+        p.sendMessage(Component.text("Your mascot's grave: ", NamedTextColor.GRAY)
+                .append(Component.text(gl.getWorld().getKey().asString() + "  " + gl.getBlockX() + " "
+                        + gl.getBlockY() + " " + gl.getBlockZ(), NamedTextColor.AQUA)));
+        if (idleDead.contains(id)) {
+            p.sendMessage(Component.text("It faded away from a lack of streams and comes back when you go live.",
+                    NamedTextColor.GRAY));
+        } else if (killers.containsKey(id)) {
+            p.sendMessage(Component.text("Killed by " + killerNames.getOrDefault(id, "a player")
+                    + ". It comes back with that player's head.", NamedTextColor.GRAY));
+        } else {
+            Material rItem = Material.matchMaterial(getConfig().getString("mascot.revive.item", "DIAMOND"));
+            int rAmount = Math.max(1, getConfig().getInt("mascot.revive.amount", 5));
+            p.sendMessage(Component.text(deathCause.getOrDefault(id, "It died") + (rItem == null ? ""
+                    : ". Right-click the grave with " + rAmount + " " + prettyName(rItem) + " to bring it back."),
+                    NamedTextColor.GRAY));
+        }
+    }
+
     private void mascotLocate(CommandSender sender, String[] args) {
         if (!sender.hasPermission("livetag.admin")) {
-            sender.sendMessage(Component.text(msg("no-permission"), NamedTextColor.RED));
+            sender.sendMessage(Component.text("Usage: /mascot grave", NamedTextColor.YELLOW));
             return;
         }
         if (args.length < 1 || !args[0].equalsIgnoreCase("locate")) {
-            sender.sendMessage(Component.text("Usage: /mascot locate [player]", NamedTextColor.YELLOW));
+            sender.sendMessage(Component.text("Usage: /mascot grave  or  /mascot locate [player]", NamedTextColor.YELLOW));
             return;
         }
         Set<UUID> who = new LinkedHashSet<>();
@@ -1062,7 +1097,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command cmd,
                              @NotNull String label, @NotNull String[] args) {
         if (cmd.getName().equalsIgnoreCase("mascot")) {
-            mascotLocate(sender, args);
+            if (args.length >= 1 && args[0].equalsIgnoreCase("grave")) mascotGrave(sender);
+            else mascotLocate(sender, args);
             return true;
         }
         if (cmd.getName().equalsIgnoreCase("streamers")) {
@@ -1251,9 +1287,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                                       @NotNull String alias, @NotNull String[] args) {
         if (cmd.getName().equalsIgnoreCase("streamers")) return List.of();
         if (cmd.getName().equalsIgnoreCase("mascot")) {
-            if (!sender.hasPermission("livetag.admin")) return List.of();
-            if (args.length == 1) return List.of("locate");
-            if (args.length == 2) {
+            boolean staff = sender.hasPermission("livetag.admin");
+            if (args.length == 1) return staff ? List.of("grave", "locate") : List.of("grave");
+            if (staff && args.length == 2 && args[0].equalsIgnoreCase("locate")) {
                 List<String> out = new ArrayList<>();
                 for (UUID id : links.keySet()) {
                     String n = Bukkit.getOfflinePlayer(id).getName();
@@ -1631,6 +1667,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                     continue;
                 }
                 mascots.put(id, m);
+                if (!grave) { // protected from every kind of damage for a while after it appears
+                    long protect = (long) (getConfig().getDouble("mascot.spawn-protection-seconds", 15.0) * 1000L);
+                    m.immuneUntil = Math.max(m.immuneUntil, System.currentTimeMillis() + protect);
+                }
                 if (!grave && introPending.remove(id)) playIntro(m);
             }
             m.login = links.get(id);
@@ -3147,17 +3187,18 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     /** The lead is gone (taken off, broken, chunk unloaded...): clean up and hand the lead back. */
     private void dropLeash(Mascot m) {
         LivingEntity proxy = m.leashProxy;
+        if (proxy == null) return; // already handed back: never give the lead a second time
         m.leashProxy = null;
-        if (proxy != null) {
-            try {
-                if (proxy.isLeashed()) proxy.setLeashHolder(null);
-            } catch (Exception ignored) {
-            }
-            proxy.remove();
+        try {
+            if (proxy.isLeashed()) proxy.setLeashHolder(null);
+        } catch (Exception ignored) {
         }
+        proxy.remove();
         ItemStack lead = new ItemStack(Material.LEAD);
         Player holder = m.leashPlayer == null ? null : Bukkit.getPlayer(m.leashPlayer);
-        if (holder != null && holder.isOnline()) giveBack(holder, lead);
+        if (holder != null && holder.isOnline() && holder.getGameMode() == GameMode.CREATIVE) {
+            // creative players did not use up a lead, so they get nothing back
+        } else if (holder != null && holder.isOnline()) giveBack(holder, lead);
         else if (m.body != null && m.body.isValid()) m.body.getWorld().dropItemNaturally(m.body.getLocation(), lead);
         m.leashPlayer = null;
     }
@@ -3496,6 +3537,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return true;
     }
 
+    /** Nothing a mascot's body drops when it dies in any vanilla way (like /kill): its gear is handled by the plugin. */
+    @EventHandler
+    public void onMascotBodyDeath(org.bukkit.event.entity.EntityDeathEvent e) {
+        if (!isMascotEntity(e.getEntity())) return;
+        e.getDrops().clear();
+        e.setDroppedExp(0);
+    }
+
     /** Healing from potions (instant health) goes into the mascot's own health, not the hidden real one. */
     @EventHandler
     public void onMascotRegain(EntityRegainHealthEvent e) {
@@ -3534,7 +3583,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
         }
         takeOne(p, hand);
-        giveBack(p, new ItemStack(Material.GLASS_BOTTLE));
+        if (p.getGameMode() != GameMode.CREATIVE) giveBack(p, new ItemStack(Material.GLASS_BOTTLE));
         p.getWorld().playSound(m.body.getLocation(), Sound.ENTITY_GENERIC_DRINK, sfx("interact", 1f), 1f);
         p.sendActionBar(Component.text("The mascot drank the potion.", NamedTextColor.LIGHT_PURPLE));
     }
@@ -3616,6 +3665,56 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     // ------------------------------------------------------------ death and rebirth
 
     /** The mascot dies: lightning, armour drops, and a grave is left behind. */
+    private static boolean isLava(Block b) {
+        return b.getType() == Material.LAVA;
+    }
+
+    /** True if there is no solid ground to put a grave on: lava, or nothing below it (the void). */
+    private boolean badGraveSpot(Location at) {
+        World w = at.getWorld();
+        if (w == null) return false;
+        if (at.getY() < w.getMinHeight() + 2) return true;
+        Block b = at.getBlock();
+        if (isLava(b) || isLava(b.getRelative(0, -1, 0))) return true;
+        RayTraceResult r = w.rayTraceBlocks(at.clone().add(0, 1, 0), new Vector(0, -1, 0), 64.0,
+                FluidCollisionMode.ALWAYS, true);
+        if (r == null) return true;
+        Block hit = r.getHitBlock();
+        return hit != null && isLava(hit);
+    }
+
+    /** Where a grave goes: where it died, or - for lava and the void - the nearest solid ground next to it. */
+    private Location safeGraveSpot(Location at) {
+        World w = at.getWorld();
+        if (w == null || !badGraveSpot(at)) return at;
+        int cx = at.getBlockX();
+        int cz = at.getBlockZ();
+        Location best = null;
+        double bestScore = Double.MAX_VALUE;
+        for (int radius = 1; radius <= 32; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue; // only the ring
+                    int x = cx + dx;
+                    int z = cz + dz;
+                    if (!w.isChunkLoaded(x >> 4, z >> 4)) continue;
+                    Block top = w.getHighestBlockAt(x, z, org.bukkit.HeightMap.MOTION_BLOCKING_NO_LEAVES);
+                    if (top.getType().isAir() || !top.getType().isSolid() || isLava(top)) continue;
+                    Block a1 = top.getRelative(0, 1, 0);
+                    Block a2 = top.getRelative(0, 2, 0);
+                    if (!a1.isPassable() || !a2.isPassable() || isLava(a1) || isLava(a2)) continue;
+                    double score = Math.hypot(dx, dz) + 0.3 * Math.abs(top.getY() + 1 - at.getY());
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = new Location(w, x + 0.5, top.getY() + 1, z + 0.5);
+                    }
+                }
+            }
+            if (best != null) break; // the nearest ring with ground wins
+        }
+        return best != null ? best : at;
+    }
+
     private void killMascot(Mascot m, Player killer, String cause) {
         UUID id = m.owner;
         if (m.body == null) return;
@@ -3623,8 +3722,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         World w = at.getWorld();
         if (w == null) return;
 
+        Location graveAt = safeGraveSpot(at); // never in lava or the void: the closest coast or ledge instead
         deadSince.put(id, System.currentTimeMillis());
-        graves.put(id, Home.of(at));
+        graves.put(id, Home.of(graveAt));
         if (killer != null) {
             killers.put(id, killer.getUniqueId());
             killerNames.put(id, killer.getName());
@@ -3639,7 +3739,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (getConfig().getBoolean("mascot.drop-armor-on-death", true)) {
             Map<EquipmentSlot, ItemStack> mine = customArmor.remove(id);
             if (mine != null) {
-                for (ItemStack it : mine.values()) w.dropItemNaturally(at, it);
+                for (ItemStack it : mine.values()) graveAt.getWorld().dropItemNaturally(graveAt, it);
             }
         }
 
@@ -3698,7 +3798,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             // it comes back right where it died, thanks the one who revived it, then waits for / goes to its owner
             long introMs = 12_300L; // about as long as the entrance takes
             long from = System.currentTimeMillis() + introMs;
-            long thanks = (long) (getConfig().getDouble("mascot.revive.thank-seconds", 4.0) * 1000L);
+            long thanks = (long) (getConfig().getDouble("mascot.revive.thank-seconds", 10.0) * 1000L);
             rebirths.put(id, new Rebirth(groundAt(at), reviver.getUniqueId(), from, from + thanks));
         } else {
             rebirths.remove(id);
