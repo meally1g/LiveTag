@@ -2180,7 +2180,6 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 e.addScoreboardTag(MASCOT_TAG);
                 e.customName(Component.text(streamerName(b.a()) + " + " + streamerName(b.b()), TextColor.color(rgb)));
                 e.setCustomNameVisible(true);
-                e.setDescription(null);
                 applySkin(e, b.a()); // the skin of the first parent's colour
                 EntityEquipment eq = e.getEquipment();
                 if (eq != null) {
@@ -2538,6 +2537,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             babyClick(p, m);
             return;
         }
+        ItemStack hand = p.getInventory().getItemInMainHand();
         boolean owner = m.owner.equals(p.getUniqueId());
         Material breedItem = Material.matchMaterial(getConfig().getString("mascot.breeding.item", "GOLDEN_APPLE"));
         if (owner && breedItem != null && hand.getType() == breedItem
@@ -2545,7 +2545,6 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             loveMascot(p, m, hand);
             return;
         }
-        ItemStack hand = p.getInventory().getItemInMainHand();
 
         if (m.isGrave) {
             graveClick(p, m, hand);
