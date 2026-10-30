@@ -246,14 +246,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("live").setExecutor(this);
         getCommand("live").setTabCompleter(this);
-        if (getCommand("mascot") != null) {
-            getCommand("mascot").setExecutor(this);
-            getCommand("mascot").setTabCompleter(this);
-        }
-        if (getCommand("streamers") != null) {
-            getCommand("streamers").setExecutor(this);
-            getCommand("streamers").setTabCompleter(this);
-        }
+        ensureCommand("mascot", "Staff tools for chat mascots (locate)", "/mascot locate [player]", "livetag.admin");
+        ensureCommand("streamers", "Shows every linked streamer, their Twitch and whether they are live",
+                "/streamers", null);
 
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (shouldShow(p.getUniqueId())) apply(p, true);
@@ -1316,11 +1311,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         int seekTicks; // how long it has been trying to reach a ladder
         long jumpHeldSince; // when the owner started holding the jump key
         long sneakSince; // when the owner started crouching
+        int detourSign; // which way it swerves around an obstacle (+1 / -1, 0 = none)
+        int clearTicks; // ticks since it last needed to swerve
         boolean airborne; // for the jump and landing sounds
         double stride; // distance walked since its last step sound
         long nextIdle; // when it may play an idle sound again
         boolean berserk; // low health: attacks everybody
         long lastAttack;
+        long immuneUntil; // short protection after popping a totem
         long lastFireHit; // fire and lava only hurt every half second, like in vanilla
         long introHideUntil; // entrance animation: name and chat stay hidden until then
         float fade = 1f; // 1 = name and chat fully shown, 0 = faded out
@@ -1855,6 +1853,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return;
         }
         if (dmg <= 0 || m.isGrave || m.body == null || !getConfig().getBoolean("mascot.can-be-killed", true)) return;
+        if (System.currentTimeMillis() < m.immuneUntil) return;
         UUID id = m.owner;
         double left = hp(id) - dmg;
         m.lastDamage = System.currentTimeMillis();
@@ -1862,7 +1861,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         dataDirty = true;
         m.body.playHurtAnimation(0f);
         m.body.getWorld().playSound(m.body.getLocation(), soundName("hit", "entity.copper_golem.hurt"), SoundCategory.PLAYERS, sfx("hurt", 1f), 1f);
-        if (left <= 0) killMascot(m, null, why);
+        if (left <= 0) {
+            if (!popTotem(m)) killMascot(m, null, why);
+        }
         else hpMap.put(id, left);
     }
 
@@ -2103,13 +2104,33 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 RayTraceResult r = w.rayTraceBlocks(next.clone().add(0, 1.3, 0), new Vector(0, -1, 0), reach,
                         FluidCollisionMode.NEVER, true);
                 if (r != null && r.getHitPosition().getY() - cur.getY() > 1.1 && (mx != 0 || mz != 0)) {
-                    m.stuck++; // a wall in the way: stay put, and catch up if it stays stuck
-                    next.setX(cur.getX());
-                    next.setZ(cur.getZ());
+                    // a wall in the way: swerve around it, and only if that fails stay put (and catch up if stuck)
+                    double[] alt = null;
+                    boolean hopOver = !special && m.vy == 0 && r.getHitPosition().getY() - cur.getY() <= 1.35;
+                    if (hopOver) {
+                        m.vy = 0.42; // a ledge a little too high to step on: jump onto it
+                        m.stuck = 0;
+                    } else {
+                        alt = detour(m, w, cur, mx, mz, reach);
+                    }
+                    m.clearTicks = 0;
+                    if (hopOver) {
+                        r = null; // (the ground check below is redone after the jump starts)
+                    } else if (alt != null) {
+                        next.setX(cur.getX() + alt[0]);
+                        next.setZ(cur.getZ() + alt[1]);
+                        next.setYaw((float) Math.toDegrees(Math.atan2(-alt[0], alt[1])));
+                        m.stuck = Math.max(0, m.stuck - 2);
+                    } else {
+                        m.stuck++;
+                        next.setX(cur.getX());
+                        next.setZ(cur.getZ());
+                    }
                     r = w.rayTraceBlocks(next.clone().add(0, 1.3, 0), new Vector(0, -1, 0), reach,
                             FluidCollisionMode.NEVER, true);
                 } else if (mx != 0 || mz != 0) {
                     m.stuck = 0;
+                    if (++m.clearTicks > 30) m.detourSign = 0;
                 }
                 if (follow && !special && m.vy == 0 && (mx != 0 || mz != 0) && r == null) {
                     // a cliff edge: it only steps off if the drop is small, so it does not fall to its death
@@ -2238,6 +2259,75 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             m.body.swingMainHand();
             target.damage(getConfig().getDouble("mascot.berserk-damage", 2.0), m.body);
         }
+    }
+
+    /** Uses the command from plugin.yml, or registers it here if an old plugin.yml is still in the jar. */
+    private void ensureCommand(String name, String description, String usage, String permission) {
+        org.bukkit.command.PluginCommand pc = getCommand(name);
+        if (pc != null) {
+            pc.setExecutor(this);
+            pc.setTabCompleter(this);
+            return;
+        }
+        final LiveTag plugin = this;
+        Command dynamic = new Command(name, description, usage, List.of()) {
+            @Override
+            public boolean execute(@NotNull CommandSender sender, @NotNull String label, @NotNull String[] args) {
+                if (permission != null && !sender.hasPermission(permission)) {
+                    sender.sendMessage(Component.text("You don't have permission to do that.", NamedTextColor.RED));
+                    return true;
+                }
+                return plugin.onCommand(sender, this, label, args);
+            }
+
+            @Override
+            public @NotNull List<String> tabComplete(@NotNull CommandSender sender, @NotNull String alias,
+                                                     @NotNull String[] args) {
+                List<String> out = plugin.onTabComplete(sender, this, alias, args);
+                return out == null ? List.of() : out;
+            }
+        };
+        if (permission != null) dynamic.setPermission(permission);
+        getServer().getCommandMap().register("chatmate", dynamic);
+        getLogger().info("Registered /" + name + " without plugin.yml (replace plugin.yml to silence this).");
+    }
+
+    /** The vanilla rules for a critical hit: falling, not on the ground, not climbing, in water, blind, riding or sprinting. */
+    private static boolean isCriticalHit(Player p) {
+        return p.getFallDistance() > 0f && !p.isOnGround() && !p.isClimbing() && !p.isInWater()
+                && !p.hasPotionEffect(PotionEffectType.BLINDNESS) && !p.isInsideVehicle() && !p.isSprinting();
+    }
+
+    /**
+     * Tries to walk around an obstacle: the same step turned 45, 90 and 135 degrees to one side and then the
+     * other. Returns the (x, z) step that has safe ground (no wall, no big drop), or null if it is boxed in.
+     */
+    private double[] detour(Mascot m, World w, Location cur, double mx, double mz, double reach) {
+        if (m.detourSign == 0) m.detourSign = ThreadLocalRandom.current().nextBoolean() ? 1 : -1;
+        int s = m.detourSign;
+        int[] angles = {45 * s, 90 * s, -45 * s, -90 * s, 135 * s, -135 * s};
+        double len = Math.max(Math.hypot(mx, mz), 0.12);
+        double base = Math.atan2(mz, mx);
+        for (int deg : angles) {
+            double a = base + Math.toRadians(deg);
+            double sx = Math.cos(a) * len;
+            double sz = Math.sin(a) * len;
+            Location test = cur.clone().add(sx, 0, sz);
+            RayTraceResult hit = w.rayTraceBlocks(test.clone().add(0, 1.3, 0), new Vector(0, -1, 0), reach,
+                    FluidCollisionMode.NEVER, true);
+            if (hit == null) continue; // a drop
+            double rise = hit.getHitPosition().getY() - cur.getY();
+            if (rise > 1.1) continue; // another wall
+            // leave room in front of its body too, so it does not rub along the wall
+            Location ahead = cur.clone().add(Math.cos(a) * 0.5, 0, Math.sin(a) * 0.5);
+            RayTraceResult hit2 = w.rayTraceBlocks(ahead.clone().add(0, 1.3, 0), new Vector(0, -1, 0), reach,
+                    FluidCollisionMode.NEVER, true);
+            if (hit2 != null && hit2.getHitPosition().getY() - cur.getY() > 1.1) continue;
+            if (deg != 45 * s) m.detourSign = deg > 0 ? 1 : -1; // keep going the way that worked
+            return new double[]{sx, sz};
+        }
+        m.detourSign = -m.detourSign; // boxed in this way: try the other way next time
+        return null;
     }
 
     private String soundName(String key, String def) {
@@ -3062,6 +3152,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Mascot m = mascotOf(ent);
         if (m == null || m.isGrave) return;
         if (!getConfig().getBoolean("mascot.can-be-killed", true)) return;
+        if (System.currentTimeMillis() < m.immuneUntil) return;
         switch (e.getCause()) {
             case SUFFOCATION, DROWNING, CRAMMING, FREEZE -> {
                 return;
@@ -3077,6 +3168,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 if (nowMs - m.lastFireHit < 500L) return; // no damage flood every tick
                 m.lastFireHit = nowMs;
                 dmg *= getConfig().getDouble("mascot.fire-damage-multiplier", 0.5);
+            }
+            case CONTACT -> { // cactus, sweet berry bushes: once every half second, not every tick
+                long nowMs = System.currentTimeMillis();
+                if (nowMs - m.lastFireHit < 500L) return;
+                m.lastFireHit = nowMs;
             }
             default -> {
             }
@@ -3112,10 +3208,18 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
         }
         m.body.playHurtAnimation(0f);
+        m.body.getWorld().playSound(m.body.getLocation(), soundName("hit", "entity.copper_golem.hurt"),
+                SoundCategory.PLAYERS, sfx("hurt", 1f), 1f);
+        if (e instanceof EntityDamageByEntityEvent critBy && critBy.getDamager() instanceof Player attacker
+                && isCriticalHit(attacker)) { // the vanilla crit effect does not show on a cancelled hit
+            Location cl = m.body.getLocation().add(0, 1.0, 0);
+            cl.getWorld().spawnParticle(Particle.CRIT, cl, 18, 0.3, 0.4, 0.3, 0.3);
+            cl.getWorld().playSound(cl, Sound.ENTITY_PLAYER_ATTACK_CRIT, SoundCategory.PLAYERS, sfx("hurt", 1f), 1f);
+        }
         m.body.getWorld().spawnParticle(Particle.DAMAGE_INDICATOR,
                 m.body.getLocation().add(0, 1.2, 0), 6, 0.3, 0.3, 0.3);
         if (left <= 0) {
-            killMascot(m, killer, why);
+            if (!popTotem(m)) killMascot(m, killer, why);
         } else {
             hpMap.put(id, left);
         }
@@ -3240,40 +3344,25 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         p.sendActionBar(Component.text("You took the item back.", NamedTextColor.GRAY));
     }
 
-    /** A mascot holding a Totem of Undying pops it to save its streamer from a deadly hit. */
-    @EventHandler(priority = org.bukkit.event.EventPriority.HIGH, ignoreCancelled = true)
-    public void onOwnerFatalDamage(EntityDamageEvent e) {
-        if (!(e.getEntity() instanceof Player p)) return;
-        if (!getConfig().getBoolean("mascot.totem-save", true)) return;
-        if (p.getHealth() - e.getFinalDamage() > 0) return;
-        Mascot m = mascots.get(p.getUniqueId());
-        if (m == null || m.isGrave || m.body == null || !m.body.isValid()) return;
-        Map<EquipmentSlot, ItemStack> mine = customArmor.get(p.getUniqueId());
+    /** A mascot holding a Totem of Undying pops it when a hit would kill it, and survives with one heart. */
+    private boolean popTotem(Mascot m) {
+        if (!getConfig().getBoolean("mascot.totem-save", true) || m.baby || m.isGrave || m.body == null) return false;
+        Map<EquipmentSlot, ItemStack> mine = customArmor.get(m.owner);
         ItemStack held = mine == null ? null : mine.get(EquipmentSlot.HAND);
-        if (held == null || held.getType() != Material.TOTEM_OF_UNDYING) return;
-        // the player's own totem works first, like normal
-        if (p.getInventory().getItemInMainHand().getType() == Material.TOTEM_OF_UNDYING
-                || p.getInventory().getItemInOffHand().getType() == Material.TOTEM_OF_UNDYING) return;
-        if (m.body.getWorld() != p.getWorld()
-                || m.body.getLocation().distance(p.getLocation()) > getConfig().getDouble("mascot.totem-range", 40.0)) return;
-
-        e.setCancelled(true);
+        if (held == null || held.getType() != Material.TOTEM_OF_UNDYING) return false;
         mine.remove(EquipmentSlot.HAND);
-        if (mine.isEmpty()) customArmor.remove(p.getUniqueId());
+        if (mine.isEmpty()) customArmor.remove(m.owner);
         EntityEquipment eq = m.body.getEquipment();
         if (eq != null) eq.setItemInMainHand(new ItemStack(Material.AIR));
-        p.setHealth(1.0);
-        p.clearActivePotionEffects();
-        p.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, 900, 1));
-        p.addPotionEffect(new PotionEffect(PotionEffectType.ABSORPTION, 100, 1));
-        p.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, 800, 0));
-        Location at = p.getLocation().add(0, 1, 0);
-        at.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at, 60, 0.4, 0.7, 0.4, 0.4);
-        Location at2 = m.body.getLocation().add(0, 1, 0);
-        at2.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at2, 30, 0.3, 0.5, 0.3, 0.3);
+        hpMap.put(m.owner, Math.min(maxHp(), 2.0));
+        m.nameDirty = true;
+        dataDirty = true;
+        m.immuneUntil = System.currentTimeMillis() + 1500L;
+        Location at = m.body.getLocation().add(0, 0.9, 0);
+        at.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at, 50, 0.3, 0.5, 0.3, 0.35);
         at.getWorld().playSound(at, Sound.ITEM_TOTEM_USE, SoundCategory.PLAYERS, sfx("totem", 1f), 1f);
-        p.sendActionBar(Component.text("Your mascot popped its totem and saved you!", NamedTextColor.GOLD));
         saveData();
+        return true;
     }
 
     /** Healing from potions (instant health) goes into the mascot's own health, not the hidden real one. */
