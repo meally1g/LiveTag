@@ -7,6 +7,10 @@ prefix: "<dark_purple><bold>[LIVE]</bold></dark_purple> "
 # (uses & colour codes).
 tab-prefix: "&5&l[LIVE] &r"
 
+# With the TAB plugin, the name above the head is also controlled by TAB, so the tag is set there too.
+tab-nametag: true
+tab-nametag-prefix: "&5&l[LIVE] &r"
+
 messages:
   enabled: "You are now LIVE - the tag is showing next to your name."
   disabled: "You are no longer LIVE - the tag is hidden."
@@ -93,6 +97,17 @@ mascot:
     - "1C8C1C"   # 16 deep_green
     - "8C541C"   # 17 deep_orange
 
+  # Breeding: each owner feeds their mascot the item below, then the two mascots stand close together and a
+  # baby appears. It is smaller, shows BOTH streamers' chats, follows the closer parent and cannot be hurt.
+  breeding:
+    enabled: true
+    item: GOLDEN_APPLE
+    max-distance: 4.5       # how close the two mascots must be
+    love-seconds: 30        # how long a mascot stays in love after being fed
+    baby-scale: 0.5         # baby size compared with a normal mascot
+    baby-days: 7            # the baby grows up and leaves after this many days (0 = never)
+    announce: true          # tell the server when a baby is born or grows up
+
   # Show the streamer's Twitch chat on the mascot even when they are offline.
   offline-chat: true
   # Twitch events shown on the mascot's board: subs, resubs, gifted subs, community gifts, raids, cheers.
@@ -176,6 +191,7 @@ mascot:
   others-can-feed: true     # anyone can feed it (owner always can)
   others-can-take-armor: false # false = only the owner can take armour off it (sneak + right-click, empty hand)
   others-can-take-item: true # anyone can take the item it holds (sneak + right-click, empty hand); armour has its own setting above
+  click-to-toggle-stay: true # right-click the mascot with an empty hand to make it stay here / follow you again (owner)
   can-hold-item: true       # the owner can give it ONE item to hold (right-click with the item; sneak + empty hand takes it back)
   others-can-leash: false   # false = only the owner can put a lead on it (anyone holding it can let go)
 
