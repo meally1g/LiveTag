@@ -160,6 +160,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private final Set<UUID> streamed = new HashSet<>();
     private final Set<UUID> idleDead = new HashSet<>(); // mascots that died from the streamer being offline too long
     private final Map<String, String> twitchNames = new ConcurrentHashMap<>(); // login -> Twitch display name
+    /** A baby mascot of two streamers. */
+    private record Baby(UUID id, UUID a, UUID b, long born) {
+    }
+
+    private final Map<UUID, Baby> babies = new HashMap<>();
+    private final Map<UUID, Mascot> babyMascots = new HashMap<>();
+    private final Map<UUID, Long> inLove = new HashMap<>(); // streamer -> until when their mascot is in love
     private final Map<UUID, Long> lastLive = new ConcurrentHashMap<>(); // when each streamer was last seen live
     private final Map<UUID, Home> homes = new ConcurrentHashMap<>();
     /** Armour pieces a streamer has put on their mascot (replaces the default coloured outfit). */
@@ -279,6 +286,18 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         ConfigurationSection tn = yml.getConfigurationSection("twitch-names");
         if (tn != null) {
             for (String key : tn.getKeys(false)) twitchNames.put(key, tn.getString(key, key));
+        }
+        ConfigurationSection bb = yml.getConfigurationSection("babies");
+        if (bb != null) {
+            for (String key : bb.getKeys(false)) {
+                try {
+                    UUID bid = UUID.fromString(key);
+                    UUID pa = UUID.fromString(bb.getString(key + ".a", ""));
+                    UUID pb = UUID.fromString(bb.getString(key + ".b", ""));
+                    babies.put(bid, new Baby(bid, pa, pb, bb.getLong(key + ".born", System.currentTimeMillis())));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
         }
         ConfigurationSection ll = yml.getConfigurationSection("last-live");
         if (ll != null) {
@@ -415,6 +434,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         yml.set("stay", stay.stream().map(UUID::toString).toList());
         yml.set("streamed", streamed.stream().map(UUID::toString).toList());
         for (Map.Entry<String, String> en : twitchNames.entrySet()) yml.set("twitch-names." + en.getKey(), en.getValue());
+        for (Baby bby : babies.values()) {
+            yml.set("babies." + bby.id() + ".a", bby.a().toString());
+            yml.set("babies." + bby.id() + ".b", bby.b().toString());
+            yml.set("babies." + bby.id() + ".born", bby.born());
+        }
         yml.set("idle-dead", idleDead.stream().map(UUID::toString).toList());
         for (Map.Entry<UUID, Long> en : lastLive.entrySet()) yml.set("last-live." + en.getKey(), en.getValue());
         for (Map.Entry<UUID, Map<EquipmentSlot, ItemStack>> en : customArmor.entrySet()) {
@@ -507,6 +531,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             cmd += " " + getConfig().getString("tab-prefix", "&5&l[LIVE] &r");
         }
         Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
+
+        // TAB also controls the name above the head, so the tag has to be set there as well
+        if (getConfig().getBoolean("tab-nametag", true)) {
+            String tag = "tab player " + p.getName() + " tagprefix";
+            if (on) tag += " " + getConfig().getString("tab-nametag-prefix", "&5&l[LIVE] &r");
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), tag);
+        }
     }
 
     private void apply(Player p, boolean on) {
@@ -1040,6 +1071,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         long partyUntil; // jumps on the spot until this time (Twitch events)
         double kx; // knockback speed (decays every tick)
         double kz;
+        boolean baby; // a baby of two streamers: shows both chats
+        String login2; // the other parent's Twitch channel (babies only)
+        double sizeFactor = 1.0; // 0.5 for babies
+
+        boolean listensTo(String channel) {
+            return (login != null && login.equals(channel)) || (login2 != null && login2.equals(channel));
+        }
+
         boolean leather = true; // wearing the default coloured leather outfit (no coloured skin)
         long lastDamage;
         long lastRegen;
@@ -1104,6 +1143,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             chat = null;
         }
         for (Mascot m : new ArrayList<>(mascots.values())) discard(m);
+        for (Mascot bm : new ArrayList<>(babyMascots.values())) discard(bm);
+        babyMascots.clear();
         mascots.clear();
         lastChannels = new HashSet<>();
     }
@@ -1332,6 +1373,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (m.login != null && (offlineChat || twitchLive.contains(id))) channels.add(m.login);
         }
 
+        tickBabies(now, channels, offlineChat);
+
         // 3. remove mascots that should not exist (disabled, or follower whose owner left)
         Iterator<Map.Entry<UUID, Mascot>> it = mascots.entrySet().iterator();
         while (it.hasNext()) {
@@ -1365,8 +1408,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         long ttl = Math.max(5L, getConfig().getLong("mascot.message-seconds", 25L)) * 1000L;
         int max = Math.max(1, getConfig().getInt("mascot.max-lines", 6));
         // Chat is shown as plain text only - never parsed as formatting.
-        for (Mascot m : mascots.values()) {
-            if (!m.isGrave && m.login != null && m.login.equals(msg.channel())) {
+        for (Mascot m : allMascots()) {
+            if (!m.isGrave && m.listensTo(msg.channel())) {
                 addLine(m, bubbleLine(name, text, m.rgb), now + ttl, max);
                 playChatSound(m, text, now);
             }
@@ -1421,9 +1464,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         };
         String sound = cs == null ? defaultSound : cs.getString("sounds." + soundKey, defaultSound);
 
-        for (Mascot m : mascots.values()) {
-            if (m.isGrave || !(msg.channel().equals("preview:" + m.owner)
-                    || (m.login != null && m.login.equals(msg.channel())))) continue;
+        for (Mascot m : allMascots()) {
+            if (m.isGrave || !(msg.channel().equals("preview:" + m.owner) || m.listensTo(msg.channel()))) continue;
             addLine(m, line, now + ttl, max);
             if (cs == null || cs.getDouble("jump-seconds", 8.0) > 0) {
                 m.partyUntil = Math.max(m.partyUntil, now + (long) ((cs == null ? 8.0 : cs.getDouble("jump-seconds", 8.0)) * 1000L));
@@ -1533,7 +1575,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     /** Hurts the mascot without an event (fall damage). Kills it if its health runs out. */
     private void hurtMascot(Mascot m, double dmg, String why) {
-        if (dmg <= 0 || m.isGrave || m.body == null || !getConfig().getBoolean("mascot.can-be-killed", true)) return;
+        if (dmg <= 0 || m.baby || m.isGrave || m.body == null || !getConfig().getBoolean("mascot.can-be-killed", true)) return;
         UUID id = m.owner;
         double left = hp(id) - dmg;
         m.lastDamage = System.currentTimeMillis();
@@ -1605,7 +1647,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private void walkTick() {
         double boardHeight = boardHeight();
         double tpDist = getConfig().getDouble("mascot.teleport-distance", 12.0); // like a dog: 12 blocks
-        for (Mascot m : mascots.values()) {
+        for (Mascot m : allMascots()) {
             Location goal = m.walkGoal;
             if (goal == null || m.isGrave || m.body == null || !m.body.isValid() || m.body.isInsideVehicle()) continue;
             Location cur = m.body.getLocation();
@@ -1839,7 +1881,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 if (!snapped && next.distanceSquared(cur) < 1.0E-6 && Math.abs(next.getYaw() - cur.getYaw()) < 2f) continue;
             }
             m.body.teleport(next);
-            if (m.board != null && m.board.isValid()) m.board.teleport(next.clone().add(0, boardHeight, 0));
+            if (m.board != null && m.board.isValid()) m.board.teleport(next.clone().add(0, boardHeight * m.sizeFactor, 0));
             if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(next.clone().add(0, 0.8, 0));
         }
     }
@@ -2045,6 +2087,220 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return item;
     }
 
+    // ------------------------------------------------------------ breeding
+
+    private String streamerName(UUID id) {
+        String login = links.get(id);
+        String name = null;
+        if (login != null && !"minecraft".equalsIgnoreCase(getConfig().getString("mascot.name-source", "twitch"))) {
+            name = twitchNames.getOrDefault(login.toLowerCase(Locale.ROOT), login);
+        }
+        if (name == null) name = Bukkit.getOfflinePlayer(id).getName();
+        return name == null ? "Streamer" : name;
+    }
+
+    private boolean hasBaby(UUID streamer) {
+        for (Baby b : babies.values()) {
+            if (b.a().equals(streamer) || b.b().equals(streamer)) return true;
+        }
+        return false;
+    }
+
+    /** The owner feeds their mascot the breeding item: it falls in love for a while. */
+    private void loveMascot(Player p, Mascot m, ItemStack hand) {
+        if (hasBaby(m.owner)) {
+            p.sendActionBar(Component.text("Your mascot already has a baby.", NamedTextColor.GRAY));
+            return;
+        }
+        takeOne(p, hand);
+        long secs = getConfig().getLong("mascot.breeding.love-seconds", 30L);
+        inLove.put(m.owner, System.currentTimeMillis() + secs * 1000L);
+        Location at = m.body.getLocation().add(0, 1.2, 0);
+        at.getWorld().spawnParticle(Particle.HEART, at, 12, 0.4, 0.4, 0.4, 0.02);
+        at.getWorld().playSound(at, Sound.ENTITY_PLAYER_BURP, SoundCategory.NEUTRAL, 1f, 1.2f);
+        p.sendActionBar(Component.text("Your mascot is in love! Bring it next to another mascot that is in love too.",
+                NamedTextColor.LIGHT_PURPLE));
+    }
+
+    private void breed(Mascot x, Mascot y) {
+        UUID id = UUID.randomUUID();
+        babies.put(id, new Baby(id, x.owner, y.owner, System.currentTimeMillis()));
+        inLove.remove(x.owner);
+        inLove.remove(y.owner);
+        Location mid = x.body.getLocation().add(y.body.getLocation()).multiply(0.5).add(0, 1.2, 0);
+        World w = mid.getWorld();
+        if (w != null) {
+            w.spawnParticle(Particle.HEART, mid, 40, 0.8, 0.6, 0.8, 0.05);
+            w.playSound(mid, Sound.ENTITY_VILLAGER_CELEBRATE, SoundCategory.NEUTRAL, 1f, 1f);
+        }
+        dataDirty = true;
+        if (getConfig().getBoolean("mascot.breeding.announce", true)) {
+            Bukkit.broadcast(Component.text(streamerName(x.owner) + " and " + streamerName(y.owner)
+                    + " had a baby mascot!", NamedTextColor.LIGHT_PURPLE));
+        }
+    }
+
+    private void babyClick(Player p, Mascot m) {
+        Location at = m.body.getLocation().add(0, 0.8, 0);
+        at.getWorld().spawnParticle(Particle.HEART, at, 4, 0.2, 0.2, 0.2, 0.01);
+        Baby b = null;
+        for (Baby cand : babies.values()) {
+            if (babyMascots.get(cand.id()) == m) b = cand;
+        }
+        if (b != null) {
+            p.sendActionBar(Component.text("The baby of " + streamerName(b.a()) + " and " + streamerName(b.b()),
+                    NamedTextColor.LIGHT_PURPLE));
+        }
+    }
+
+    private Mascot createBaby(Baby b, Location base) {
+        World w = base.getWorld();
+        if (w == null) return null;
+        int rgbA = colorFor(b.a());
+        int rgbB = colorFor(b.b());
+        int rgb = (((rgbA >> 16 & 0xFF) + (rgbB >> 16 & 0xFF)) / 2) << 16
+                | (((rgbA >> 8 & 0xFF) + (rgbB >> 8 & 0xFF)) / 2) << 8
+                | (((rgbA & 0xFF) + (rgbB & 0xFF)) / 2);
+        double factor = Math.max(0.2, getConfig().getDouble("mascot.breeding.baby-scale", 0.5));
+        Mascot m = new Mascot(b.a(), links.get(b.a()), rgb);
+        m.baby = true;
+        m.login2 = links.get(b.b());
+        m.sizeFactor = factor;
+        m.stopDist = 2.0;
+        try {
+            m.body = w.spawn(base, Mannequin.class, e -> {
+                e.setPersistent(false);
+                e.setSilent(true);
+                e.setGravity(false);
+                e.setCollidable(false);
+                e.setImmovable(true);
+                e.setInvulnerable(true); // babies cannot be hurt
+                AttributeInstance sc = e.getAttribute(Attribute.SCALE);
+                if (sc != null) sc.setBaseValue(mascotScale() * factor);
+                e.addScoreboardTag(MASCOT_TAG);
+                e.customName(Component.text(streamerName(b.a()) + " + " + streamerName(b.b()), TextColor.color(rgb)));
+                e.setCustomNameVisible(true);
+                e.setDescription(null);
+                applySkin(e, b.a()); // the skin of the first parent's colour
+                EntityEquipment eq = e.getEquipment();
+                if (eq != null) {
+                    eq.setChestplate(dyed(Material.LEATHER_CHESTPLATE, Color.fromRGB(rgb)));
+                    for (EquipmentSlot slot : EquipmentSlot.values()) eq.setDropChance(slot, 0f);
+                }
+            });
+            m.board = w.spawn(base.clone().add(0, boardHeight() * factor, 0), TextDisplay.class, t -> {
+                t.setPersistent(false);
+                t.addScoreboardTag(MASCOT_TAG);
+                t.setBillboard(Display.Billboard.CENTER);
+                t.setAlignment(TextDisplay.TextAlignment.CENTER);
+                t.setShadowed(true);
+                t.setLineWidth(200);
+                t.setTeleportDuration(3);
+                t.setDefaultBackground(false);
+                t.setBackgroundColor(Color.fromARGB(0, 0, 0, 0));
+                float bs = (float) Math.max(0.2, getConfig().getDouble("mascot.board-scale", 0.6));
+                t.setTransformation(new Transformation(new Vector3f(0, 0, 0), new AxisAngle4f(),
+                        new Vector3f(bs, bs, bs), new AxisAngle4f()));
+                t.text(Component.empty());
+                t.setViewRange(0f);
+            });
+        } catch (Exception ex) {
+            getLogger().warning("Could not spawn a baby mascot: " + ex);
+            m.remove();
+            return null;
+        }
+        return m;
+    }
+
+    /** Runs with the mascot tick: love hearts, breeding, and keeping every baby alive and near its parents. */
+    private void tickBabies(long now, Set<String> channels, boolean offlineChat) {
+        // mascots in love: hearts, and breeding when two are close to each other
+        inLove.values().removeIf(until -> until < now);
+        if (!inLove.isEmpty()) {
+            double maxDist = getConfig().getDouble("mascot.breeding.max-distance", 4.5);
+            List<Mascot> loving = new ArrayList<>();
+            for (Mascot m : mascots.values()) {
+                if (m.isGrave || !m.valid() || !inLove.containsKey(m.owner) || hasBaby(m.owner)) continue;
+                loving.add(m);
+                m.body.getWorld().spawnParticle(Particle.HEART, m.body.getLocation().add(0, 1.3, 0), 1, 0.3, 0.2, 0.3, 0);
+            }
+            outer:
+            for (int i = 0; i < loving.size(); i++) {
+                for (int j = i + 1; j < loving.size(); j++) {
+                    Mascot x = loving.get(i);
+                    Mascot y = loving.get(j);
+                    if (x.body.getWorld() == y.body.getWorld()
+                            && x.body.getLocation().distance(y.body.getLocation()) <= maxDist) {
+                        breed(x, y);
+                        break outer;
+                    }
+                }
+            }
+        }
+
+        double days = getConfig().getDouble("mascot.breeding.baby-days", 7.0);
+        Iterator<Baby> it = babies.values().iterator();
+        while (it.hasNext()) {
+            Baby b = it.next();
+            boolean grownUp = days > 0 && now - b.born() > (long) (days * 86400_000L);
+            boolean orphan = !links.containsKey(b.a()) || !links.containsKey(b.b());
+            if (grownUp || orphan) {
+                Mascot old = babyMascots.remove(b.id());
+                if (old != null) {
+                    if (grownUp && old.body != null && old.body.isValid()) {
+                        Location at = old.body.getLocation().add(0, 0.8, 0);
+                        at.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, at, 40, 0.3, 0.5, 0.3, 0.2);
+                        at.getWorld().playSound(at, Sound.ENTITY_PLAYER_LEVELUP, SoundCategory.NEUTRAL, 1f, 1.3f);
+                    }
+                    discard(old);
+                }
+                it.remove();
+                dataDirty = true;
+                if (grownUp && getConfig().getBoolean("mascot.breeding.announce", true)) {
+                    Bukkit.broadcast(Component.text("The baby of " + streamerName(b.a()) + " and "
+                            + streamerName(b.b()) + " grew up and left to explore the world.", NamedTextColor.GRAY));
+                }
+                continue;
+            }
+
+            Player pa = Bukkit.getPlayer(b.a());
+            Player pb = Bukkit.getPlayer(b.b());
+            Mascot m = babyMascots.get(b.id());
+            if (pa == null && pb == null) { // both parents are offline: the baby waits
+                if (m != null) {
+                    discard(m);
+                    babyMascots.remove(b.id());
+                }
+                continue;
+            }
+            Player near = pa != null ? pa : pb;
+            if (pa != null && pb != null) {
+                Location ref = m != null && m.body != null && m.body.isValid() ? m.body.getLocation() : pa.getLocation();
+                if (ref.getWorld() == pb.getWorld()
+                        && (pa.getWorld() != ref.getWorld() || pb.getLocation().distanceSquared(ref) < pa.getLocation().distanceSquared(ref))) {
+                    near = pb;
+                }
+            }
+            if (m == null || !m.valid()) {
+                if (m != null) discard(m);
+                Location spawn = mascotLocation(near);
+                if (!spawn.getWorld().isChunkLoaded(spawn.getBlockX() >> 4, spawn.getBlockZ() >> 4)) continue;
+                m = createBaby(b, spawn);
+                if (m == null) continue;
+                babyMascots.put(b.id(), m);
+            }
+            m.login = links.get(b.a());
+            m.login2 = links.get(b.b());
+            m.walkGoal = near.getLocation();
+            m.stopDist = 2.0;
+            if (offlineChat || twitchLive.contains(b.a()) || twitchLive.contains(b.b())) {
+                if (m.login != null) channels.add(m.login);
+                if (m.login2 != null) channels.add(m.login2);
+            }
+            renderBoard(m, now);
+        }
+    }
+
     // ------------------------------------------------------------ lead and boats
 
     /**
@@ -2150,8 +2406,14 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     // ------------------------------------------------------------ mascot interaction
 
+    private List<Mascot> allMascots() {
+        List<Mascot> all = new ArrayList<>(mascots.values());
+        all.addAll(babyMascots.values());
+        return all;
+    }
+
     private Mascot mascotOf(Entity entity) {
-        for (Mascot m : mascots.values()) {
+        for (Mascot m : allMascots()) {
             if (m.body != null && m.body.getUniqueId().equals(entity.getUniqueId())) return m;
             if (m.tomb != null && m.tomb.getUniqueId().equals(entity.getUniqueId())) return m;
             if (m.leashProxy != null && m.leashProxy.getUniqueId().equals(entity.getUniqueId())) return m;
@@ -2193,7 +2455,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         e.setCancelled(true);
 
         Mascot m = mascotOf(ent);
-        if (m == null || m.isGrave) return;
+        if (m == null || m.isGrave || m.baby) return;
         if (!getConfig().getBoolean("mascot.can-be-killed", true)) return;
         switch (e.getCause()) {
             case SUFFOCATION, DROWNING, CRAMMING, FREEZE -> {
@@ -2272,7 +2534,17 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Player p = e.getPlayer();
         Mascot m = mascotOf(clicked);
         if (m == null) return;
+        if (m.baby) {
+            babyClick(p, m);
+            return;
+        }
         boolean owner = m.owner.equals(p.getUniqueId());
+        Material breedItem = Material.matchMaterial(getConfig().getString("mascot.breeding.item", "GOLDEN_APPLE"));
+        if (owner && breedItem != null && hand.getType() == breedItem
+                && getConfig().getBoolean("mascot.breeding.enabled", true)) {
+            loveMascot(p, m, hand);
+            return;
+        }
         ItemStack hand = p.getInventory().getItemInMainHand();
 
         if (m.isGrave) {
@@ -2287,6 +2559,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
         boolean canHold = getConfig().getBoolean("mascot.can-hold-item", true);
         if (hand.getType().isAir()) {
+            if (!p.isSneaking() && owner && getConfig().getBoolean("mascot.click-to-toggle-stay", true)) {
+                setFollow(p, stay.contains(m.owner)); // right-click with an empty hand: stay here / follow me
+                return;
+            }
             if (p.isSneaking()) {
                 Map<EquipmentSlot, ItemStack> mine = customArmor.get(m.owner);
                 boolean holding = mine != null && mine.containsKey(EquipmentSlot.HAND);
