@@ -1665,7 +1665,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
         } catch (Exception ignored) {
         }
-        return 1.8 * sc / 42.0 * Math.max(0.3, getConfig().getDouble("mascot.model-scale", 1.0));
+        return 1.8 * sc / 40.0 * Math.max(0.3, getConfig().getDouble("mascot.model-scale", 1.35));
     }
 
     /** Re-fits every part when the mascot grows or shrinks (entrance animation, babies, config). */
@@ -1676,12 +1676,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         m.tvK = 16.0 * u;
         // A text display grows UPWARD from its position, so the chat is anchored at the bottom of the glass
         // (glass = units 23..32 above the feet) and rows stack up inside it, newest at the bottom.
-        m.tvY = (23.0 + 0.7) * u;
+        m.tvY = 25.5 * u;
         m.tvFront = 4.35 * u; // the text floats just in front of the screen, INSIDE the TV's frame (the frame hides any overflow)
         applyPose(m);
         // the chat text is sized so 'cols' x 'rows' characters exactly fill the glass (one text pixel = 0.025 blocks * scale)
         if (m.board != null && m.board.isValid()) {
-            double glassW = 15.5 * u, glassH = 8.6 * u; // glass is 16 x 9 units; keep a small margin
+            double glassW = 11.5 * u, glassH = 7.7 * u; // glass is 12 x 8 units; keep a small margin
             int cols = screenCols(), rows = screenRows();
             double fit = Math.min(glassW / (cols * 6.5 * 0.025), glassH / (rows * 10.0 * 0.025));
             float ts = (float) Math.max(0.05, fit * getConfig().getDouble("mascot.model-text-scale", 1.0));
@@ -1719,9 +1719,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double sec = now / 1000.0;
         double t = sec + m.idlePhase;
         boolean moving = m.walking;
-        double walk = moving ? Math.sin(m.swingPhase) * 0.7 : 0.0;
+        m.swingAmp += ((moving ? 1.0 : 0.0) - m.swingAmp) * 0.35; // eases in and out, never snaps
+        if (m.swingAmp < 0.02) m.swingAmp = 0;
+        boolean striding = m.swingAmp > 0;
+        double walk = Math.sin(m.swingPhase) * 0.7 * m.swingAmp;
         double breathe = Math.sin(t * 2.4);
-        double bob = moving ? Math.abs(Math.sin(m.swingPhase)) * 0.45 : breathe * 0.22;
+        double bob = striding ? Math.abs(Math.sin(m.swingPhase)) * 0.45 * m.swingAmp + breathe * 0.22 * (1 - m.swingAmp) : breathe * 0.22;
         double raise = 0.0;
         if (now < m.waveUntil) {
             raise = Math.max(0.0, Math.min(1.0, Math.min((now - m.waveStart) / 250.0, (m.waveUntil - now) / 300.0)));
@@ -1729,17 +1732,19 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double wave = raise * (2.45 + 0.35 * Math.sin(sec * 15.0));
         double headRoll = 0.0; // the head stays level: the chat text is a separate entity glued to the screen
         double headNod = 0.0;
-        double sway = moving ? 0.0 : breathe * 0.05;
-        int dur = moving ? 3 : 4;
+        double sway = breathe * 0.05 * (1 - m.swingAmp);
+        int dur = 3;
         // joints (units above the feet): neck 18, waist 9, shoulders 17, hips 9; models hang from their joint
-        poseDisplay(m.tv, u, 0, 18, 0, new Quaternionf().rotateZ((float) headRoll).rotateX((float) headNod), dur);
-        poseDisplay(m.limbs[4], u, 0, 9 + bob * 0.6, 0, new Quaternionf().rotateZ((float) (sway * 0.3)), dur);
-        poseDisplay(m.limbs[0], u, 5.5, 17 + bob * 0.6, 0,
+        Quaternionf headRot = new Quaternionf().rotateZ((float) headRoll).rotateX((float) headNod);
+        poseDisplay(m.tv, u, 0, 22 + bob * 0.5, 0, headRot, dur);
+        if (m.limbs.length > 5) poseDisplay(m.limbs[5], u, 0, 22 + bob * 0.5, 0, new Quaternionf(headRot), dur);
+        poseDisplay(m.limbs[4], u, 0, 11 + bob * 0.6, 0, new Quaternionf().rotateZ((float) (sway * 0.3)), dur);
+        poseDisplay(m.limbs[0], u, 5.5, 21 + bob * 0.6, 0,
                 new Quaternionf().rotateZ((float) (wave + sway)).rotateX((float) (-walk * 0.8)), dur);
-        poseDisplay(m.limbs[1], u, -5.5, 17 + bob * 0.6, 0,
+        poseDisplay(m.limbs[1], u, -5.5, 21 + bob * 0.6, 0,
                 new Quaternionf().rotateZ((float) -sway).rotateX((float) (walk * 0.8)), dur);
-        poseDisplay(m.limbs[2], u, 2.5, 9, 0, new Quaternionf().rotateX((float) walk), dur);
-        poseDisplay(m.limbs[3], u, -2.5, 9, 0, new Quaternionf().rotateX((float) -walk), dur);
+        poseDisplay(m.limbs[2], u, 2.5, 11, 0, new Quaternionf().rotateX((float) walk), dur);
+        poseDisplay(m.limbs[3], u, -2.5, 11, 0, new Quaternionf().rotateX((float) -walk), dur);
     }
 
     /** Called whenever the mascot moves: advances the stride by the distance walked. */
@@ -1768,28 +1773,28 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             if (d > 2.0) d = 0;
             // Walking = it really got somewhere. Jittering against a tree or wall, or sliding a hair while its
             // owner turns the camera, never moves it far in half a second.
-            m.walking = net > 0.6;
+            m.walking = m.walking ? net > 0.25 : net > 0.8; // hysteresis: starts when it really travels, stops as soon as it is still
             if (m.walking) m.swingPhase += d / 0.9 * Math.PI;
         }
-        if (++m.animTick % (m.walking ? 2 : 3) != 0) return;
+        if (++m.animTick % ((m.walking || m.swingAmp > 0) ? 2 : 3) != 0) return;
         applyPose(m);
     }
 
     private String wantedScreen(Mascot m, long now) {
-        if (screenChat.contains(m.owner)) return "_chat";
-        if (now < m.talkUntil && (now / 140L) % 2 == 0) return "_talk";
+        if (screenChat.contains(m.owner)) return "chat";
+        if (now < m.talkUntil && (now / 140L) % 2 == 0) return "talk";
         long phase = now + (long) (m.idlePhase * 1000.0);
-        if (phase % 4600L < 140L) return "_blink";
-        return "";
+        if (phase % 4600L < 140L) return "blink";
+        return "face";
     }
 
     /** Swaps the head model when the screen changes: face, blink, talk or chat. */
     private void updateScreen(Mascot m) {
-        if (m.tv == null || !m.tv.isValid()) return;
+        if (m.limbs == null || m.limbs.length < 6 || m.limbs[5] == null || !m.limbs[5].isValid()) return;
         String want = wantedScreen(m, System.currentTimeMillis());
         if (want.equals(m.screen)) return;
         m.screen = want;
-        m.tv.setItemStack(partItem("livetag_head" + want, m.rgb));
+        m.limbs[5].setItemStack(partItem("livetag_screen_" + want, 0xFFFFFF));
     }
 
     /** Right-click: switches the TV screen between its face and the stream chat. */
@@ -2211,11 +2216,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     }
 
     private int screenCols() {
-        return Math.max(8, Math.min(40, getConfig().getInt("mascot.screen-cols", 18)));
+        return Math.max(8, Math.min(40, getConfig().getInt("mascot.screen-cols", 14)));
     }
 
     private int screenRows() {
-        return Math.max(2, Math.min(12, getConfig().getInt("mascot.screen-rows", 6)));
+        return Math.max(2, Math.min(12, getConfig().getInt("mascot.screen-rows", 5)));
     }
 
     /** Wraps "name: message" into rows of at most 'cols' characters (max 3 rows), each padded to the same width. */
@@ -3182,13 +3187,17 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         final ItemStack arm = partItem("livetag_arm", m.rgb);
         final ItemStack leg = partItem("livetag_leg", m.rgb);
         m.tv = spawnPart(w, base, head);
+        ItemDisplay screen = spawnPart(w, base, partItem("livetag_screen_face", 0xFFFFFF));
+        screen.setBrightness(new Display.Brightness(15, 15)); // the screen glows, even at night
+        m.screen = "face";
         m.limbs = new ItemDisplay[]{spawnPart(w, base, arm), spawnPart(w, base, arm),
-                spawnPart(w, base, leg), spawnPart(w, base, leg), spawnPart(w, base, torso)};
+                spawnPart(w, base, leg), spawnPart(w, base, leg), spawnPart(w, base, torso), screen};
         m.lastPX = base.getX();
         m.lastPZ = base.getZ();
         m.board.setBillboard(Display.Billboard.FIXED);
         m.board.setAlignment(TextDisplay.TextAlignment.LEFT);
         m.board.setShadowed(false);
+        m.board.setBrightness(new Display.Brightness(15, 15));
         try {
             m.body.setInvisible(true); // the hitbox stays, the model is ours
         } catch (Exception ignored) {
