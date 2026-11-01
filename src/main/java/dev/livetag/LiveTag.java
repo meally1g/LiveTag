@@ -158,6 +158,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private final Set<UUID> preview = new HashSet<>();
     /** Streamers whose mascot stands still instead of following them. */
     private final Set<UUID> stay = new HashSet<>();
+    /** Streamers whose mascot shows the chat on its TV screen (the others show a face). */
+    private final Set<UUID> screenChat = new HashSet<>();
     /** Streamers who have been live on Twitch at least once - only they get a mascot. */
     private final Set<UUID> streamed = new HashSet<>();
     private final Set<UUID> idleDead = new HashSet<>(); // mascots that died from the streamer being offline too long
@@ -286,6 +288,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         for (String s : yml.getStringList("stay")) {
             try {
                 stay.add(UUID.fromString(s));
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        for (String s : yml.getStringList("screen-chat")) {
+            try {
+                screenChat.add(UUID.fromString(s));
             } catch (IllegalArgumentException ignored) {
             }
         }
@@ -457,6 +465,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         yml.set("mascot-off", mascotOff.stream().map(UUID::toString).toList());
         yml.set("stay", stay.stream().map(UUID::toString).toList());
+        yml.set("screen-chat", screenChat.stream().map(UUID::toString).toList());
         yml.set("streamed", streamed.stream().map(UUID::toString).toList());
         for (Map.Entry<String, String> en : twitchNames.entrySet()) yml.set("twitch-names." + en.getKey(), en.getValue());
         for (Baby bby : babies.values()) {
@@ -1372,7 +1381,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         long waveUntil;
         int animTick;
         int moveStreak;
-        double speed; // smoothed blocks per tick, measured from the body itself
+        double speed;
+        final double[] hx = new double[10]; // body position over the last 10 ticks (walk detection)
+        final double[] hz = new double[10];
+        int hi;
+        boolean walking;
+        String screen = ""; // which head model is shown: face, blink, talk or chat
+        long talkUntil;
         double idlePhase;
         double lastPX;
         double lastPZ;
@@ -1615,7 +1630,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         if (m.modelStyle) syncModelScale(m);
         double yaw = Math.toRadians(at.getYaw());
-        double front = m.tvFront + getConfig().getDouble("mascot.tv-text-forward", 0.03);
+        double front = m.tvFront + (m.modelStyle ? 0.0 : getConfig().getDouble("mascot.tv-text-forward", 0.03));
         Location tvAt = at.clone();
         tvAt.setPitch(0f);
         m.tv.teleport(tvAt);
@@ -1662,7 +1677,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         // A text display grows UPWARD from its position, so the chat is anchored at the bottom of the glass
         // (glass = units 23..32 above the feet) and rows stack up inside it, newest at the bottom.
         m.tvY = (23.0 + 0.7) * u;
-        m.tvFront = 7.1 * u; // screen glass is this far in front of the model centre
+        m.tvFront = 4.35 * u; // the text floats just in front of the screen, INSIDE the TV's frame (the frame hides any overflow)
         applyPose(m);
         // the chat text is sized so 'cols' x 'rows' characters exactly fill the glass (one text pixel = 0.025 blocks * scale)
         if (m.board != null && m.board.isValid()) {
@@ -1703,7 +1718,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         long now = System.currentTimeMillis();
         double sec = now / 1000.0;
         double t = sec + m.idlePhase;
-        boolean moving = m.speed > 0.035;
+        boolean moving = m.walking;
         double walk = moving ? Math.sin(m.swingPhase) * 0.7 : 0.0;
         double breathe = Math.sin(t * 2.4);
         double bob = moving ? Math.abs(Math.sin(m.swingPhase)) * 0.45 : breathe * 0.22;
@@ -1735,19 +1750,59 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     /** Every tick: keeps the body animated (every 2nd tick walking, every 3rd tick idle). */
     private void animateModel(Mascot m) {
         if (!m.modelStyle || m.limbs == null) return;
+        syncModelScale(m); // the entrance animation grows the mascot: keep every part fitted to its size
+        updateScreen(m);
         if (m.body != null && m.body.isValid()) {
             Location bl = m.body.getLocation();
-            double dx = bl.getX() - m.lastPX, dz = bl.getZ() - m.lastPZ;
-            m.lastPX = bl.getX();
-            m.lastPZ = bl.getZ();
-            double d = Math.sqrt(dx * dx + dz * dz);
-            if (d > 2.0) d = 0; // teleported
-            m.speed = m.speed * 0.7 + d * 0.3; // smoothed, so jitter never counts and a stop is noticed within ~5 ticks
-            if (m.speed > 0.035) m.swingPhase += d / 0.9 * Math.PI;
+            double x = bl.getX(), z = bl.getZ();
+            int slot = m.hi % 10;
+            double net = 0;
+            if (m.hi >= 10) net = Math.hypot(x - m.hx[slot], z - m.hz[slot]); // where it was 10 ticks (half a second) ago
+            m.hx[slot] = x;
+            m.hz[slot] = z;
+            m.hi++;
+            if (net > 6.0) net = 0; // teleported
+            double d = Math.hypot(x - m.lastPX, z - m.lastPZ);
+            m.lastPX = x;
+            m.lastPZ = z;
+            if (d > 2.0) d = 0;
+            // Walking = it really got somewhere. Jittering against a tree or wall, or sliding a hair while its
+            // owner turns the camera, never moves it far in half a second.
+            m.walking = net > 0.6;
+            if (m.walking) m.swingPhase += d / 0.9 * Math.PI;
         }
-        boolean moving = m.speed > 0.035;
-        if (++m.animTick % (moving ? 2 : 3) != 0) return;
+        if (++m.animTick % (m.walking ? 2 : 3) != 0) return;
         applyPose(m);
+    }
+
+    private String wantedScreen(Mascot m, long now) {
+        if (screenChat.contains(m.owner)) return "_chat";
+        if (now < m.talkUntil && (now / 140L) % 2 == 0) return "_talk";
+        long phase = now + (long) (m.idlePhase * 1000.0);
+        if (phase % 4600L < 140L) return "_blink";
+        return "";
+    }
+
+    /** Swaps the head model when the screen changes: face, blink, talk or chat. */
+    private void updateScreen(Mascot m) {
+        if (m.tv == null || !m.tv.isValid()) return;
+        String want = wantedScreen(m, System.currentTimeMillis());
+        if (want.equals(m.screen)) return;
+        m.screen = want;
+        m.tv.setItemStack(partItem("livetag_head" + want, m.rgb));
+    }
+
+    /** Right-click: switches the TV screen between its face and the stream chat. */
+    private void toggleScreen(Player p, Mascot m) {
+        boolean chat = !screenChat.remove(m.owner);
+        if (chat) screenChat.add(m.owner);
+        m.dirty = true;
+        m.screen = "?"; // force the head model to refresh
+        saveData();
+        if (m.body != null && m.body.isValid()) {
+            p.getWorld().playSound(m.body.getLocation(), Sound.UI_BUTTON_CLICK, SoundCategory.NEUTRAL, sfx("interact", 1f), chat ? 1.5f : 1.0f);
+        }
+        p.sendActionBar(Component.text(chat ? "Screen: chat" : "Screen: face", NamedTextColor.LIGHT_PURPLE));
     }
 
     /** Chat board height, shrunk together with the mascot. */
@@ -2138,6 +2193,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             for (Component row : wrapForScreen(line, cols)) m.lines.addLast(new Mascot.Line(row, expiresAt));
             // a greeting wave now and then (not on every message, busy chats would never stop waving)
             long nowMs = System.currentTimeMillis();
+            m.talkUntil = nowMs + 1100L; // the face talks for a moment
             if (nowMs > m.waveUntil + 25_000L) {
                 m.waveStart = nowMs;
                 m.waveUntil = nowMs + 1600L;
@@ -2147,6 +2203,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         }
         while (m.lines.size() > max) m.lines.pollFirst();
         m.dirty = true;
+    }
+
+    /** The chat is only drawn while the screen is in chat mode (model style); other styles always show it. */
+    private boolean boardVisible(Mascot m) {
+        return !m.modelStyle || screenChat.contains(m.owner);
     }
 
     private int screenCols() {
@@ -2228,9 +2289,9 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (!m.dirty) return;
         m.dirty = false;
 
-        if (m.lines.isEmpty()) {
+        if (m.lines.isEmpty() || !boardVisible(m)) {
             m.board.text(Component.empty());
-            m.board.setViewRange(0f); // hide the empty board
+            m.board.setViewRange(0f); // hide the empty board (or the chat while the screen shows the face)
             return;
         }
         List<Component> parts = new ArrayList<>();
@@ -2827,7 +2888,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (m.board != null && m.board.isValid()) {
             m.board.setTextOpacity((byte) Math.max(40, Math.round(m.fade * 255f)));
             if (m.fade < 0.12f) m.board.setViewRange(0f);
-            else if (!m.lines.isEmpty()) m.board.setViewRange(1f);
+            else if (!m.lines.isEmpty() && boardVisible(m)) m.board.setViewRange(1f);
         }
         boolean showName = m.fade >= 0.5f;
         if (showName != m.nameShown && m.body != null && m.body.isValid()) {
@@ -3797,8 +3858,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     /**
      * Right-click a mascot:
      *  - food in hand: feed it (heals it) - anyone, unless turned off in the config
-     *  - armour in hand: put it on - the owner only
-     *  - sneaking with an empty hand: take one piece of armour off it - anyone, unless turned off
+     *  - plain right-click (owner): switch the TV screen between its face and the chat
+     *  - shift + right-click (owner): the mascot stays where it is / follows again
      *  - at a grave: the head of the player who killed it brings it back (staff can use /live mascot revive)
      */
     @EventHandler(ignoreCancelled = false)
@@ -3834,38 +3895,22 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return;
         }
 
-        boolean canHold = getConfig().getBoolean("mascot.can-hold-item", true);
-        if (hand.getType().isAir()) {
-            if (!p.isSneaking() && owner && getConfig().getBoolean("mascot.click-to-toggle-stay", true)) {
-                setFollow(p, stay.contains(m.owner)); // right-click with an empty hand: stay here / follow me
-                return;
-            }
-            if (p.isSneaking()) {
-                Map<EquipmentSlot, ItemStack> mine = customArmor.get(m.owner);
-                boolean holding = mine != null && mine.containsKey(EquipmentSlot.HAND);
-                if (holding && (owner || getConfig().getBoolean("mascot.others-can-take-item", true))) {
-                    takeHeld(p, m); // the held item has its own rule, separate from the armour
-                } else if (owner || getConfig().getBoolean("mascot.others-can-take-armor", false)) {
-                    takeArmor(p, m);
-                }
+        // Armour and held items are gone: right-click toggles the screen, shift + right-click stays / follows.
+        boolean food = hand.getType() == Material.POTION || hand.getType().isEdible();
+        if (p.isSneaking()) { // shift + right-click: stay here / follow me
+            if (owner) setFollow(p, stay.contains(m.owner));
+            return;
+        }
+        if (food) {
+            if (owner || getConfig().getBoolean("mascot.others-can-feed", true)) {
+                if (hand.getType() == Material.POTION) givePotion(p, m, hand);
+                else feedMascot(p, m, hand);
             }
             return;
         }
-        if (owner && canHold && p.isSneaking()) { // sneak + right-click with an item: it holds that item
-            holdItem(p, m, hand);
-            return;
-        }
-        EquipmentSlot slot = hand.getType().getEquipmentSlot();
-        if (slot == EquipmentSlot.HEAD || slot == EquipmentSlot.CHEST
-                || slot == EquipmentSlot.LEGS || slot == EquipmentSlot.FEET) {
-            if (owner) equipArmor(p, m, slot, hand);
-        } else if (hand.getType() == Material.POTION) {
-            if (owner || getConfig().getBoolean("mascot.others-can-feed", true)) givePotion(p, m, hand);
-        } else if (hand.getType().isEdible()) {
-            if (owner || getConfig().getBoolean("mascot.others-can-feed", true)) feedMascot(p, m, hand);
-        } else if (owner && canHold) {
-            holdItem(p, m, hand); // any other item: the mascot holds it
-        }
+        if (!owner) return;
+        if (m.modelStyle) toggleScreen(p, m); // right-click: face <-> chat
+        else if (getConfig().getBoolean("mascot.click-to-toggle-stay", true)) setFollow(p, stay.contains(m.owner));
     }
 
     /** The mascot holds ONE item in its hand (a sword, a torch, a flower...). The owner gives and takes it. */
