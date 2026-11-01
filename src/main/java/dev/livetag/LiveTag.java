@@ -1372,6 +1372,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         long waveUntil;
         int animTick;
         int moveStreak;
+        double speed; // smoothed blocks per tick, measured from the body itself
         double idlePhase;
         double lastPX;
         double lastPZ;
@@ -1702,7 +1703,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         long now = System.currentTimeMillis();
         double sec = now / 1000.0;
         double t = sec + m.idlePhase;
-        boolean moving = now - m.lastMoveMs < 250;
+        boolean moving = m.speed > 0.035;
         double walk = moving ? Math.sin(m.swingPhase) * 0.7 : 0.0;
         double breathe = Math.sin(t * 2.4);
         double bob = moving ? Math.abs(Math.sin(m.swingPhase)) * 0.45 : breathe * 0.22;
@@ -1711,12 +1712,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             raise = Math.max(0.0, Math.min(1.0, Math.min((now - m.waveStart) / 250.0, (m.waveUntil - now) / 300.0)));
         }
         double wave = raise * (2.45 + 0.35 * Math.sin(sec * 15.0));
-        double headRoll = (moving ? Math.sin(m.swingPhase) * 0.05 : Math.sin(t * 1.1) * 0.05) + raise * Math.sin(sec * 8.0) * 0.07;
-        double headNod = (moving ? 0.0 : breathe * 0.02) + raise * (0.1 + Math.sin(sec * 9.0) * 0.06);
+        double headRoll = 0.0; // the head stays level: the chat text is a separate entity glued to the screen
+        double headNod = 0.0;
         double sway = moving ? 0.0 : breathe * 0.05;
         int dur = moving ? 3 : 4;
         // joints (units above the feet): neck 18, waist 9, shoulders 17, hips 9; models hang from their joint
-        poseDisplay(m.tv, u, 0, 18 + bob, 0, new Quaternionf().rotateZ((float) headRoll).rotateX((float) headNod), dur);
+        poseDisplay(m.tv, u, 0, 18, 0, new Quaternionf().rotateZ((float) headRoll).rotateX((float) headNod), dur);
         poseDisplay(m.limbs[4], u, 0, 9 + bob * 0.6, 0, new Quaternionf().rotateZ((float) (sway * 0.3)), dur);
         poseDisplay(m.limbs[0], u, 5.5, 17 + bob * 0.6, 0,
                 new Quaternionf().rotateZ((float) (wave + sway)).rotateX((float) (-walk * 0.8)), dur);
@@ -1728,27 +1729,23 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     /** Called whenever the mascot moves: advances the stride by the distance walked. */
     private void swingLimbs(Mascot m, Location at) {
-        double dx = at.getX() - m.lastPX;
-        double dz = at.getZ() - m.lastPZ;
-        m.lastPX = at.getX();
-        m.lastPZ = at.getZ();
-        double dist = Math.sqrt(dx * dx + dz * dz);
-        // standing still, sliding slowly while its owner turns, jitter, or teleported: not walking
-        if (dist < 0.07 || dist > 2.0) {
-            m.moveStreak = 0;
-            return;
-        }
-        if (++m.moveStreak < 2) return; // must keep moving for two steps in a row
-        m.swingPhase += dist / 0.9 * Math.PI;
-        m.swingAmp = 1.0;
-        m.lastMoveMs = System.currentTimeMillis();
+        // walking is measured from the body's real movement every tick in animateModel()
     }
 
     /** Every tick: keeps the body animated (every 2nd tick walking, every 3rd tick idle). */
     private void animateModel(Mascot m) {
         if (!m.modelStyle || m.limbs == null) return;
-        boolean moving = System.currentTimeMillis() - m.lastMoveMs < 250;
-        if (!moving) m.swingAmp = 0;
+        if (m.body != null && m.body.isValid()) {
+            Location bl = m.body.getLocation();
+            double dx = bl.getX() - m.lastPX, dz = bl.getZ() - m.lastPZ;
+            m.lastPX = bl.getX();
+            m.lastPZ = bl.getZ();
+            double d = Math.sqrt(dx * dx + dz * dz);
+            if (d > 2.0) d = 0; // teleported
+            m.speed = m.speed * 0.7 + d * 0.3; // smoothed, so jitter never counts and a stop is noticed within ~5 ticks
+            if (m.speed > 0.035) m.swingPhase += d / 0.9 * Math.PI;
+        }
+        boolean moving = m.speed > 0.035;
         if (++m.animTick % (moving ? 2 : 3) != 0) return;
         applyPose(m);
     }
