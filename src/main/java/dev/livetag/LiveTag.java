@@ -1648,7 +1648,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
         } catch (Exception ignored) {
         }
-        return 1.8 * sc / 41.0 * Math.max(0.3, getConfig().getDouble("mascot.model-scale", 1.0));
+        return 1.8 * sc / 42.0 * Math.max(0.3, getConfig().getDouble("mascot.model-scale", 1.0));
     }
 
     /** Re-fits every part when the mascot grows or shrinks (entrance animation, babies, config). */
@@ -1657,13 +1657,16 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (Math.abs(u - m.lastU) < 1e-5) return;
         m.lastU = u;
         m.tvK = 16.0 * u;
-        m.tvY = 29.0 * u;   // screen centre (head spans 20..36 units, glass is 16 x 10 units)
-        m.tvFront = 6.1 * u; // screen glass is this far in front of the model centre
+        m.tvY = 27.5 * u;   // screen centre (head spans 18..35 units, glass is 18 x 11 units)
+        m.tvFront = 7.1 * u; // screen glass is this far in front of the model centre
         applyPose(m);
-        // the chat text follows the screen size: the glass is 16 x 10 units
+        // the chat text is sized so 'cols' x 'rows' characters exactly fill the glass (one text pixel = 0.025 blocks * scale)
         if (m.board != null && m.board.isValid()) {
-            float ts = (float) Math.max(0.05, getConfig().getDouble("mascot.model-text-scale", 0.25) * (u / 0.035));
-            int px = (int) Math.max(40, Math.round(15.0 * u / (0.025 * ts)));
+            double glassW = 15.5 * u, glassH = 8.6 * u; // glass is 16 x 9 units; keep a small margin
+            int cols = screenCols(), rows = screenRows();
+            double fit = Math.min(glassW / (cols * 6.0 * 0.025), glassH / (rows * 9.0 * 0.025));
+            float ts = (float) Math.max(0.05, fit * getConfig().getDouble("mascot.model-text-scale", 1.0));
+            int px = cols * 6 + 14; // wide enough that the game never wraps a row we already wrapped
             m.board.setLineWidth(px);
             m.board.setTransformation(new Transformation(new Vector3f(0, 0, 0), new AxisAngle4f(),
                     new Vector3f(ts, ts, ts), new AxisAngle4f()));
@@ -1709,15 +1712,15 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double headNod = (moving ? 0.0 : breathe * 0.02) + raise * (0.1 + Math.sin(sec * 9.0) * 0.06);
         double sway = moving ? 0.0 : breathe * 0.05;
         int dur = moving ? 3 : 4;
-        // joints (units above the feet): neck 20, waist 10, shoulders 19, hips 10; models hang from their joint
-        poseDisplay(m.tv, u, 0, 20 + bob, 0, new Quaternionf().rotateZ((float) headRoll).rotateX((float) headNod), dur);
-        poseDisplay(m.limbs[4], u, 0, 10 + bob * 0.6, 0, new Quaternionf().rotateZ((float) (sway * 0.3)), dur);
-        poseDisplay(m.limbs[0], u, 5.5, 19 + bob * 0.6, 0,
+        // joints (units above the feet): neck 18, waist 9, shoulders 17, hips 9; models hang from their joint
+        poseDisplay(m.tv, u, 0, 18 + bob, 0, new Quaternionf().rotateZ((float) headRoll).rotateX((float) headNod), dur);
+        poseDisplay(m.limbs[4], u, 0, 9 + bob * 0.6, 0, new Quaternionf().rotateZ((float) (sway * 0.3)), dur);
+        poseDisplay(m.limbs[0], u, 5.5, 17 + bob * 0.6, 0,
                 new Quaternionf().rotateZ((float) (wave + sway)).rotateX((float) (-walk * 0.8)), dur);
-        poseDisplay(m.limbs[1], u, -5.5, 19 + bob * 0.6, 0,
+        poseDisplay(m.limbs[1], u, -5.5, 17 + bob * 0.6, 0,
                 new Quaternionf().rotateZ((float) -sway).rotateX((float) (walk * 0.8)), dur);
-        poseDisplay(m.limbs[2], u, 2.2, 10, 0, new Quaternionf().rotateX((float) walk), dur);
-        poseDisplay(m.limbs[3], u, -2.2, 10, 0, new Quaternionf().rotateX((float) -walk), dur);
+        poseDisplay(m.limbs[2], u, 2.5, 9, 0, new Quaternionf().rotateX((float) walk), dur);
+        poseDisplay(m.limbs[3], u, -2.5, 9, 0, new Quaternionf().rotateX((float) -walk), dur);
     }
 
     /** Called whenever the mascot moves: advances the stride by the distance walked. */
@@ -1727,7 +1730,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         m.lastPX = at.getX();
         m.lastPZ = at.getZ();
         double dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist < 0.01 || dist > 2.0) return; // standing still, turning, or teleported
+        if (dist < 0.045 || dist > 2.0) return; // standing still, jitter, turning, or teleported
         m.swingPhase += dist / 0.9 * Math.PI;
         m.swingAmp = 1.0;
         m.lastMoveMs = System.currentTimeMillis();
@@ -2123,14 +2126,95 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     }
 
     private void addLine(Mascot m, Component line, long expiresAt, int max) {
-        m.lines.addLast(new Mascot.Line(line, expiresAt));
+        if (m.modelStyle) {
+            // the chat lives ON the TV screen: wrap it to the screen's columns and keep only the rows that fit
+            int cols = screenCols();
+            max = screenRows();
+            for (Component row : wrapForScreen(line, cols)) m.lines.addLast(new Mascot.Line(row, expiresAt));
+            // a greeting wave now and then (not on every message, busy chats would never stop waving)
+            long nowMs = System.currentTimeMillis();
+            if (nowMs > m.waveUntil + 25_000L) {
+                m.waveStart = nowMs;
+                m.waveUntil = nowMs + 1600L;
+            }
+        } else {
+            m.lines.addLast(new Mascot.Line(line, expiresAt));
+        }
         while (m.lines.size() > max) m.lines.pollFirst();
         m.dirty = true;
-        if (m.modelStyle) { // a new chat line: wave and nod
-            long nowMs = System.currentTimeMillis();
-            if (nowMs >= m.waveUntil) m.waveStart = nowMs;
-            m.waveUntil = nowMs + 1500L;
+    }
+
+    private int screenCols() {
+        return Math.max(8, Math.min(40, getConfig().getInt("mascot.screen-cols", 14)));
+    }
+
+    private int screenRows() {
+        return Math.max(2, Math.min(12, getConfig().getInt("mascot.screen-rows", 6)));
+    }
+
+    /** Wraps "name: message" into rows of at most 'cols' characters (max 3 rows), each padded to the same width. */
+    private List<Component> wrapForScreen(Component line, int cols) {
+        List<Component> out = new ArrayList<>();
+        String plain = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(line);
+        int c = plain.indexOf(": ");
+        if (c <= 0 || c > 30) { // an event line (sub, raid...) keeps its own formatting
+            out.add(line);
+            return out;
         }
+        String name = plain.substring(0, c);
+        String rest = plain.substring(c + 2).trim();
+        if (name.length() > cols - 4) name = name.substring(0, Math.max(1, cols - 5)) + "..";
+        int rgb = 0xFFFFFF;
+        net.kyori.adventure.text.format.TextColor nameColor = line.children().isEmpty() ? null : line.children().get(0).color();
+        int firstRoom = Math.max(4, cols - name.length() - 2);
+        List<String> rows = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        int room = firstRoom;
+        for (String word : rest.split("\\s+")) {
+            while (word.length() > room) { // a word longer than a row is cut
+                if (cur.length() > 0) {
+                    rows.add(cur.toString());
+                    cur.setLength(0);
+                    room = cols;
+                }
+                if (word.length() <= room) break;
+                rows.add(word.substring(0, room));
+                word = word.substring(room);
+                room = cols;
+            }
+            if (cur.length() + (cur.length() > 0 ? 1 : 0) + word.length() > room) {
+                rows.add(cur.toString());
+                cur.setLength(0);
+                room = cols;
+            }
+            if (cur.length() > 0) cur.append(' ');
+            cur.append(word);
+        }
+        if (cur.length() > 0 || rows.isEmpty()) rows.add(cur.toString());
+        if (rows.size() > 3) { // one long message must not push all the other chat off the screen
+            rows = new ArrayList<>(rows.subList(0, 3));
+            String last = rows.get(2);
+            rows.set(2, (last.length() > cols - 2 ? last.substring(0, cols - 2) : last) + "..");
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            String seg = rows.get(i);
+            Component row;
+            int used;
+            if (i == 0) {
+                row = Component.empty()
+                        .append(Component.text(name, nameColor == null ? NamedTextColor.WHITE : nameColor, TextDecoration.BOLD))
+                        .append(Component.text(": ", NamedTextColor.GRAY))
+                        .append(Component.text(seg, TextColor.color(0x66FF66)));
+                used = name.length() + 2 + seg.length();
+            } else {
+                row = Component.text(seg, TextColor.color(0x66FF66));
+                used = seg.length();
+            }
+            int pad = Math.max(0, cols - used);
+            if (pad > 0) row = Component.empty().append(row).append(Component.text(" ".repeat(pad)));
+            out.add(row);
+        }
+        return out;
     }
 
     private void renderBoard(Mascot m, long now) {
