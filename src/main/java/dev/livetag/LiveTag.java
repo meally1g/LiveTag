@@ -243,6 +243,15 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (shouldShow(p.getUniqueId())) apply(p, true);
+            else apply(p, false); // a [LIVE] tag saved in the scoreboard from before the restart
+        }
+        try { // stale team entries (e.g. players who are offline now) would keep a tag nobody earned
+            Team stale = team();
+            for (String entry : new ArrayList<>(stale.getEntries())) {
+                Player pl = Bukkit.getPlayerExact(entry);
+                if (pl == null || !shouldShow(pl.getUniqueId())) stale.removeEntry(entry);
+            }
+        } catch (Exception ignored) {
         }
 
         startPolling();
@@ -805,6 +814,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             apply(p, true);
             // give the TAB plugin a moment to load the player first
             Bukkit.getScheduler().runTaskLater(this, () -> syncTabPlugin(p, true), 40L);
+        } else {
+            // the stream may have ended while they were away: wipe any [LIVE] tag left behind
+            apply(p, false);
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (p.isOnline() && !shouldShow(p.getUniqueId())) syncTabPlugin(p, false);
+            }, 40L);
         }
         if (twitchLive.contains(p.getUniqueId())) {
             Bukkit.getScheduler().runTaskLater(this, () -> summonMascot(p.getUniqueId()), 40L);
