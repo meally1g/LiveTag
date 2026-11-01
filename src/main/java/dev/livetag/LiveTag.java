@@ -17,6 +17,7 @@ import org.bukkit.FluidCollisionMode;
 import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Transformation;
 import org.joml.AxisAngle4f;
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.bukkit.util.Vector;
 import org.bukkit.GameMode;
@@ -1358,7 +1359,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Mannequin body;
         TextDisplay board;
         ItemDisplay tv; // TV-head style: the big TV model worn over the head (null = classic look)
-        ItemDisplay[] limbs; // model style: arm, arm, leg, leg (swing while walking)
+        ItemDisplay[] limbs; // model style: arm, arm, leg, leg, torso
         double tvK = 1.0; // display scale of the TV / body model
         double tvY; // height of the TV screen centre
         double tvFront; // how far the screen is in front of the model centre
@@ -1367,6 +1368,10 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double pose; // current limb swing angle
         double swingPhase;
         double swingAmp;
+        long waveStart; // chat reaction: wave + nod until waveUntil
+        long waveUntil;
+        int animTick;
+        double idlePhase;
         double lastPX;
         double lastPZ;
         long lastMoveMs;
@@ -1581,12 +1586,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     /** True when mascots wear the big TV head and show chat on its screen (mascot.style: tv). */
     private boolean tvStyle() {
-        return "tv".equalsIgnoreCase(getConfig().getString("mascot.style", "classic"));
+        return "tv".equalsIgnoreCase(getConfig().getString("mascot.style", "model"));
     }
 
     /** True for the full 3D body: torso, arms, legs and the TV head (mascot.style: model). */
     private boolean modelStyle() {
-        return "model".equalsIgnoreCase(getConfig().getString("mascot.style", "classic"));
+        return "model".equalsIgnoreCase(getConfig().getString("mascot.style", "model"));
     }
 
     /** Head centre height on the mannequin (blocks), shrunk together with the mascot. */
@@ -1643,7 +1648,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
         } catch (Exception ignored) {
         }
-        return 1.8 * sc / 36.0 * Math.max(0.3, getConfig().getDouble("mascot.model-scale", 1.0));
+        return 1.8 * sc / 41.0 * Math.max(0.3, getConfig().getDouble("mascot.model-scale", 1.0));
     }
 
     /** Re-fits every part when the mascot grows or shrinks (entrance animation, babies, config). */
@@ -1651,48 +1656,71 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double u = modelUnit(m);
         if (Math.abs(u - m.lastU) < 1e-5) return;
         m.lastU = u;
-        float k = (float) (16.0 * u);
         m.tvK = 16.0 * u;
-        m.tvY = 27.0 * u; // screen centre
-        m.tvFront = 5.1 * u;
-        if (m.tv != null && m.tv.isValid()) {
-            m.tv.setInterpolationDelay(0);
-            m.tv.setInterpolationDuration(2);
-            m.tv.setTransformation(new Transformation(new Vector3f(0f, (float) (24.0 * u), 0f), new AxisAngle4f(), // model is stored 16 units low (client limit -16..32)
-                    new Vector3f(k, k, k), new AxisAngle4f()));
-        }
-        setLimbPose(m, m.pose);
-        // the chat text follows the screen size: the screen is 20 x 13 units
+        m.tvY = 29.0 * u;   // screen centre (head spans 20..36 units, glass is 16 x 10 units)
+        m.tvFront = 6.1 * u; // screen glass is this far in front of the model centre
+        applyPose(m);
+        // the chat text follows the screen size: the glass is 16 x 10 units
         if (m.board != null && m.board.isValid()) {
             float ts = (float) Math.max(0.05, getConfig().getDouble("mascot.model-text-scale", 0.25) * (u / 0.035));
-            int px = (int) Math.max(40, Math.round(20.0 * u / (0.025 * ts)));
+            int px = (int) Math.max(40, Math.round(15.0 * u / (0.025 * ts)));
             m.board.setLineWidth(px);
             m.board.setTransformation(new Transformation(new Vector3f(0, 0, 0), new AxisAngle4f(),
                     new Vector3f(ts, ts, ts), new AxisAngle4f()));
         }
     }
 
-    /** Puts the four limbs at a swing angle (arms and legs swing the opposite way, like walking). */
-    private void setLimbPose(Mascot m, double angle) {
-        m.pose = angle;
-        if (m.limbs == null) return;
-        double u = m.lastU > 0 ? m.lastU : modelUnit(m);
-        float k = (float) (16.0 * u);
-        // arm.x, leg.x on either side; the shoulder is 17 units up, the hip 9
-        double[][] spot = {{6.1, 17.0, 1}, {-6.1, 17.0, -1}, {2.0, 9.0, -1}, {-2.0, 9.0, 1}};
-        for (int i = 0; i < 4 && i < m.limbs.length; i++) {
-            ItemDisplay d = m.limbs[i];
-            if (d == null || !d.isValid()) continue;
-            d.setInterpolationDelay(0);
-            d.setInterpolationDuration(3);
-            d.setTransformation(new Transformation(
-                    new Vector3f((float) (spot[i][0] * u), (float) (spot[i][1] * u), 0f),
-                    new AxisAngle4f((float) (angle * spot[i][2]), 1f, 0f, 0f),
-                    new Vector3f(k, k, k), new AxisAngle4f()));
-        }
+    /** The model's screen is on its +z side; this turns it to the side the mascot faces (mascot.model-flip). */
+    private Quaternionf modelFlip() {
+        return getConfig().getBoolean("mascot.model-flip", true)
+                ? new Quaternionf().rotateY((float) Math.PI) : new Quaternionf();
     }
 
-    /** Called whenever the mascot moves: swings the limbs by the distance walked. */
+    /** Places one body part: its joint (model units, relative to the mascot's feet) and rotation. */
+    private void poseDisplay(ItemDisplay d, double u, double jx, double jy, double jz, Quaternionf rot, int dur) {
+        if (d == null || !d.isValid()) return;
+        float k = (float) (16.0 * u);
+        d.setInterpolationDelay(0);
+        d.setInterpolationDuration(dur);
+        d.setTransformation(new Transformation(new Vector3f((float) (jx * u), (float) (jy * u), (float) (jz * u)),
+                rot, new Vector3f(k, k, k), modelFlip()));
+    }
+
+    /**
+     * One animation frame for the whole body: breathing and swaying while idle, a stride and bobbing
+     * while walking, and a wave plus a nod when a chat line arrives. Parts: tv = head, limbs = arm, arm, leg, leg, torso.
+     */
+    private void applyPose(Mascot m) {
+        if (!m.modelStyle || m.limbs == null || m.limbs.length < 5) return;
+        double u = m.lastU > 0 ? m.lastU : modelUnit(m);
+        long now = System.currentTimeMillis();
+        double sec = now / 1000.0;
+        double t = sec + m.idlePhase;
+        boolean moving = now - m.lastMoveMs < 250;
+        double walk = moving ? Math.sin(m.swingPhase) * 0.7 : 0.0;
+        double breathe = Math.sin(t * 2.4);
+        double bob = moving ? Math.abs(Math.sin(m.swingPhase)) * 0.45 : breathe * 0.22;
+        double raise = 0.0;
+        if (now < m.waveUntil) {
+            raise = Math.max(0.0, Math.min(1.0, Math.min((now - m.waveStart) / 250.0, (m.waveUntil - now) / 300.0)));
+        }
+        double wave = raise * (2.45 + 0.35 * Math.sin(sec * 15.0));
+        double headRoll = (moving ? Math.sin(m.swingPhase) * 0.05 : Math.sin(t * 1.1) * 0.05) + raise * Math.sin(sec * 8.0) * 0.07;
+        double headNod = (moving ? 0.0 : breathe * 0.02) + raise * (0.1 + Math.sin(sec * 9.0) * 0.06);
+        double sway = moving ? 0.0 : breathe * 0.05;
+        int dur = moving ? 3 : 4;
+        // joints (units above the feet): neck 20, waist 10, shoulders 19, hips 10; models hang from their joint
+        poseDisplay(m.tv, u, 0, 20 + bob, 0, new Quaternionf().rotateZ((float) headRoll).rotateX((float) headNod), dur);
+        poseDisplay(m.limbs[4], u, 0, 10 + bob * 0.6, 0, new Quaternionf().rotateZ((float) (sway * 0.3)), dur);
+        poseDisplay(m.limbs[0], u, 5.5, 19 + bob * 0.6, 0,
+                new Quaternionf().rotateZ((float) (wave + sway)).rotateX((float) (-walk * 0.8)), dur);
+        poseDisplay(m.limbs[1], u, -5.5, 19 + bob * 0.6, 0,
+                new Quaternionf().rotateZ((float) -sway).rotateX((float) (walk * 0.8)), dur);
+        poseDisplay(m.limbs[2], u, 2.2, 10, 0, new Quaternionf().rotateX((float) walk), dur);
+        poseDisplay(m.limbs[3], u, -2.2, 10, 0, new Quaternionf().rotateX((float) -walk), dur);
+    }
+
+    /** Called whenever the mascot moves: advances the stride by the distance walked. */
     private void swingLimbs(Mascot m, Location at) {
         double dx = at.getX() - m.lastPX;
         double dz = at.getZ() - m.lastPZ;
@@ -1701,17 +1729,17 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double dist = Math.sqrt(dx * dx + dz * dz);
         if (dist < 0.01 || dist > 2.0) return; // standing still, turning, or teleported
         m.swingPhase += dist / 0.9 * Math.PI;
-        m.swingAmp = Math.min(1.0, m.swingAmp + 0.5);
+        m.swingAmp = 1.0;
         m.lastMoveMs = System.currentTimeMillis();
-        setLimbPose(m, Math.sin(m.swingPhase) * 0.65 * m.swingAmp);
     }
 
-    /** Back to the standing pose a moment after it stops. */
-    private void limbRest(Mascot m) {
-        if (m.limbs == null || m.swingAmp <= 0) return;
-        if (System.currentTimeMillis() - m.lastMoveMs < 250) return;
-        m.swingAmp = 0;
-        setLimbPose(m, 0);
+    /** Every tick: keeps the body animated (every 2nd tick walking, every 3rd tick idle). */
+    private void animateModel(Mascot m) {
+        if (!m.modelStyle || m.limbs == null) return;
+        boolean moving = System.currentTimeMillis() - m.lastMoveMs < 250;
+        if (!moving) m.swingAmp = 0;
+        if (++m.animTick % (moving ? 2 : 3) != 0) return;
+        applyPose(m);
     }
 
     /** Chat board height, shrunk together with the mascot. */
@@ -2098,6 +2126,11 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         m.lines.addLast(new Mascot.Line(line, expiresAt));
         while (m.lines.size() > max) m.lines.pollFirst();
         m.dirty = true;
+        if (m.modelStyle) { // a new chat line: wave and nod
+            long nowMs = System.currentTimeMillis();
+            if (nowMs >= m.waveUntil) m.waveStart = nowMs;
+            m.waveUntil = nowMs + 1500L;
+        }
     }
 
     private void renderBoard(Mascot m, long now) {
@@ -2214,7 +2247,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double tpDist = getConfig().getDouble("mascot.teleport-distance", 12.0); // like a dog: 12 blocks
         for (Mascot m : allMascots()) {
             fadeTick(m);
-            if (m.limbs != null) limbRest(m);
+            if (m.limbs != null) animateModel(m);
             Location goal = m.walkGoal;
             if (goal == null || m.isGrave || m.body == null || !m.body.isValid() || m.body.isInsideVehicle()) continue;
             Location cur = m.body.getLocation();
@@ -2988,17 +3021,19 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         placeBoard(m, at, 1.0);
     }
 
-    /** Full 3D body: torso + big TV head, two arms, two legs; the mannequin underneath turns invisible. */
+    /** Full 3D body: TV head with antennas, hoodie torso, two arms, two legs; the mannequin underneath turns invisible. */
     private void wearModel(Mascot m, Location base) {
         World w = base.getWorld();
         if (w == null || m.board == null) return;
         m.modelStyle = true;
-        final ItemStack bust = partItem("livetag_bust", m.rgb);
+        m.idlePhase = (m.owner.hashCode() & 0xFFFF) / 1000.0;
+        final ItemStack head = partItem("livetag_head", m.rgb);
+        final ItemStack torso = partItem("livetag_torso", m.rgb);
         final ItemStack arm = partItem("livetag_arm", m.rgb);
         final ItemStack leg = partItem("livetag_leg", m.rgb);
-        m.tv = spawnPart(w, base, bust);
+        m.tv = spawnPart(w, base, head);
         m.limbs = new ItemDisplay[]{spawnPart(w, base, arm), spawnPart(w, base, arm),
-                spawnPart(w, base, leg), spawnPart(w, base, leg)};
+                spawnPart(w, base, leg), spawnPart(w, base, leg), spawnPart(w, base, torso)};
         m.lastPX = base.getX();
         m.lastPZ = base.getZ();
         m.board.setBillboard(Display.Billboard.FIXED);
@@ -3080,6 +3115,18 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (eq == null) return;
         Color color = Color.fromRGB(rgb);
         Map<EquipmentSlot, ItemStack> mine = customArmor.get(id);
+        if (modelStyle()) { // the 3D body is drawn by display entities: nothing may show on the hidden mannequin
+            eq.setHelmet(null);
+            eq.setChestplate(null);
+            eq.setLeggings(null);
+            eq.setBoots(null);
+            eq.setItemInMainHand(new ItemStack(Material.AIR));
+            try {
+                for (EquipmentSlot slot : EquipmentSlot.values()) eq.setDropChance(slot, 0f);
+            } catch (Exception ignored) {
+            }
+            return;
+        }
         eq.setHelmet(pick(mine, EquipmentSlot.HEAD, null));
         eq.setChestplate(pick(mine, EquipmentSlot.CHEST, dyed(Material.LEATHER_CHESTPLATE, color))); // coloured chestplate only
         eq.setLeggings(pick(mine, EquipmentSlot.LEGS, null));
