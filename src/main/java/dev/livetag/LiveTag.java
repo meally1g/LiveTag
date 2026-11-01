@@ -728,7 +728,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         Location to = mascotLocation(p);
         if (m.body.getWorld() == to.getWorld() && m.body.getLocation().distanceSquared(to) < 9.0) return; // already close
         m.body.teleport(to);
-        if (m.board != null && m.board.isValid()) m.board.teleport(to.clone().add(0, boardHeight(), 0));
+        placeBoard(m, to, 1.0);
         to.getWorld().spawnParticle(Particle.POOF, to.clone().add(0, 1, 0), 12, 0.3, 0.5, 0.3, 0.02);
     }
 
@@ -1357,6 +1357,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         final int rgb;
         Mannequin body;
         TextDisplay board;
+        ItemDisplay tv; // TV-head style: the big TV model worn over the head (null = classic look)
         final Deque<Line> lines = new ArrayDeque<>();
         boolean dirty = true;
         Boolean liveShown;
@@ -1425,18 +1426,21 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         boolean valid() {
             if (board == null || !board.isValid()) return false;
             if (isGrave) return tomb != null && tomb.isValid() && skull != null && skull.isValid();
+            if (tv != null && !tv.isValid()) return false; // lost its TV: respawn the whole mascot
             return body != null && body.isValid();
         }
 
         void remove() {
             if (body != null) body.remove();
             if (board != null) board.remove();
+            if (tv != null) tv.remove();
             if (tomb != null) tomb.remove();
             if (skull != null) skull.remove();
             if (leashProxy != null) leashProxy.remove();
             leashProxy = null;
             body = null;
             board = null;
+            tv = null;
             tomb = null;
             skull = null;
         }
@@ -1558,6 +1562,40 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
 
     private double mascotScale() {
         return Math.max(0.1, Math.min(4.0, getConfig().getDouble("mascot.scale", 0.7)));
+    }
+
+    /** True when mascots wear the big TV head and show chat on its screen (mascot.style: tv). */
+    private boolean tvStyle() {
+        return "tv".equalsIgnoreCase(getConfig().getString("mascot.style", "classic"));
+    }
+
+    /** Head centre height on the mannequin (blocks), shrunk together with the mascot. */
+    private double headCentre() {
+        return 1.55 * mascotScale();
+    }
+
+    /** TV size in blocks per model unit * 16 (1.0 = the TV is as wide as one block). */
+    private double tvSize() {
+        return Math.max(0.3, getConfig().getDouble("mascot.tv-scale", 1.8)) * mascotScale();
+    }
+
+    /** Moves the chat board (and the TV when worn) to follow the mascot standing at 'at'. */
+    private void placeBoard(Mascot m, Location at, double heightFactor) {
+        if (m.board == null || !m.board.isValid()) return;
+        if (m.tv == null || !m.tv.isValid()) {
+            m.board.teleport(at.clone().add(0, boardHeight() * heightFactor, 0));
+            return;
+        }
+        double yaw = Math.toRadians(at.getYaw());
+        double k = tvSize();
+        double front = 6.0 / 16.0 * k + getConfig().getDouble("mascot.tv-text-forward", 0.03); // screen is 6 units in front of centre
+        Location tvAt = at.clone();
+        tvAt.setPitch(0f);
+        m.tv.teleport(tvAt);
+        Location textAt = at.clone().add(-Math.sin(yaw) * front, headCentre() + getConfig().getDouble("mascot.tv-text-y", 0.0),
+                Math.cos(yaw) * front);
+        textAt.setPitch(0f);
+        m.board.teleport(textAt);
     }
 
     /** Chat board height, shrunk together with the mascot. */
@@ -1937,7 +1975,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         return Component.empty()
                 .append(Component.text(name, TextColor.color(rgb), TextDecoration.BOLD))
                 .append(Component.text(": ", NamedTextColor.GRAY))
-                .append(Component.text(text, NamedTextColor.WHITE));
+                .append(Component.text(text, tvStyle() ? TextColor.color(0x66FF66) : NamedTextColor.WHITE));
     }
 
     private void addLine(Mascot m, Component line, long expiresAt, int max) {
@@ -2300,7 +2338,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             }
             stepSounds(m, cur, next);
             m.body.teleport(next);
-            if (m.board != null && m.board.isValid()) m.board.teleport(next.clone().add(0, boardHeight * m.sizeFactor, 0));
+            placeBoard(m, next, m.sizeFactor);
             if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(next.clone().add(0, 0.8, 0));
         }
     }
@@ -2569,7 +2607,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         double boardHeight = boardHeight();
         if (m.body.isInsideVehicle()) { // sitting in a boat: only the chat board and lead follow
             Location at = m.body.getLocation();
-            m.board.teleport(at.clone().add(0, boardHeight, 0));
+            placeBoard(m, at, 1.0);
             if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(at.clone().add(0, 0.8, 0));
             return;
         }
@@ -2580,7 +2618,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return;
         }
         m.body.teleport(target);
-        m.board.teleport(target.clone().add(0, boardHeight, 0));
+        placeBoard(m, target, 1.0);
         if (m.leashProxy != null && m.leashProxy.isValid()) m.leashProxy.teleport(target.clone().add(0, 0.8, 0));
     }
 
@@ -2774,6 +2812,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
                 t.text(Component.empty());
                 t.setViewRange(0f);
             });
+            if (tvStyle()) wearTv(m, base);
         } catch (Exception ex) {
             if (!warnedSpawn) {
                 warnedSpawn = true;
@@ -2789,6 +2828,43 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             return null;
         }
         return m;
+    }
+
+    /**
+     * TV-head style: a big TV model (Nexo resource pack, item model nexo:livetag_tv, tinted in the
+     * streamer's colour) over the head, and the chat board turned into text on its screen.
+     */
+    private void wearTv(Mascot m, Location base) {
+        World w = base.getWorld();
+        if (w == null || m.board == null) return;
+        double k = tvSize();
+        ItemStack item = new ItemStack(Material.LEATHER_HORSE_ARMOR);
+        org.bukkit.inventory.meta.ItemMeta meta = item.getItemMeta();
+        if (meta instanceof LeatherArmorMeta lm) lm.setColor(Color.fromRGB(m.rgb & 0xFFFFFF));
+        meta.setItemModel(new org.bukkit.NamespacedKey("nexo", "livetag_tv"));
+        item.setItemMeta(meta);
+        final double ty = headCentre();
+        m.tv = w.spawn(base, ItemDisplay.class, d -> {
+            d.setPersistent(false);
+            d.addScoreboardTag(MASCOT_TAG);
+            d.setItemStack(item);
+            d.setBillboard(Display.Billboard.FIXED);
+            d.setTeleportDuration(3);
+            d.setTransformation(new Transformation(new Vector3f(0f, (float) ty, 0f), new AxisAngle4f(),
+                    new Vector3f((float) k, (float) k, (float) k), new AxisAngle4f()));
+        });
+        // the chat: flat on the screen, green terminal text
+        float ts = (float) Math.max(0.1, getConfig().getDouble("mascot.tv-text-scale", 0.4));
+        double screenW = 12.0 / 16.0 * k; // screen width in blocks
+        int px = (int) Math.max(40, Math.round(screenW / (0.025 * ts)));
+        m.board.setBillboard(Display.Billboard.FIXED);
+        m.board.setAlignment(TextDisplay.TextAlignment.LEFT);
+        m.board.setShadowed(false);
+        m.board.setLineWidth(px);
+        m.board.setTransformation(new Transformation(new Vector3f(0, 0, 0), new AxisAngle4f(),
+                new Vector3f(ts, ts, ts), new AxisAngle4f()));
+        Location at = base.clone();
+        placeBoard(m, at, 1.0);
     }
 
     private static String text(Object o) {
