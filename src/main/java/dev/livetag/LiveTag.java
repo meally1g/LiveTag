@@ -1658,7 +1658,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (m.tv != null && m.tv.isValid()) {
             m.tv.setInterpolationDelay(0);
             m.tv.setInterpolationDuration(2);
-            m.tv.setTransformation(new Transformation(new Vector3f(0f, (float) (8.0 * u), 0f), new AxisAngle4f(),
+            m.tv.setTransformation(new Transformation(new Vector3f(0f, (float) (24.0 * u), 0f), new AxisAngle4f(), // model is stored 16 units low (client limit -16..32)
                     new Vector3f(k, k, k), new AxisAngle4f()));
         }
         setLimbPose(m, m.pose);
