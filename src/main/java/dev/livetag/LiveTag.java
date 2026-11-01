@@ -1371,6 +1371,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         long waveStart; // chat reaction: wave + nod until waveUntil
         long waveUntil;
         int animTick;
+        int moveStreak;
         double idlePhase;
         double lastPX;
         double lastPZ;
@@ -1657,14 +1658,16 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         if (Math.abs(u - m.lastU) < 1e-5) return;
         m.lastU = u;
         m.tvK = 16.0 * u;
-        m.tvY = 27.5 * u;   // screen centre (head spans 18..35 units, glass is 18 x 11 units)
+        // A text display grows UPWARD from its position, so the chat is anchored at the bottom of the glass
+        // (glass = units 23..32 above the feet) and rows stack up inside it, newest at the bottom.
+        m.tvY = (23.0 + 0.7) * u;
         m.tvFront = 7.1 * u; // screen glass is this far in front of the model centre
         applyPose(m);
         // the chat text is sized so 'cols' x 'rows' characters exactly fill the glass (one text pixel = 0.025 blocks * scale)
         if (m.board != null && m.board.isValid()) {
             double glassW = 15.5 * u, glassH = 8.6 * u; // glass is 16 x 9 units; keep a small margin
             int cols = screenCols(), rows = screenRows();
-            double fit = Math.min(glassW / (cols * 6.0 * 0.025), glassH / (rows * 9.0 * 0.025));
+            double fit = Math.min(glassW / (cols * 6.5 * 0.025), glassH / (rows * 10.0 * 0.025));
             float ts = (float) Math.max(0.05, fit * getConfig().getDouble("mascot.model-text-scale", 1.0));
             int px = cols * 6 + 14; // wide enough that the game never wraps a row we already wrapped
             m.board.setLineWidth(px);
@@ -1730,7 +1733,12 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
         m.lastPX = at.getX();
         m.lastPZ = at.getZ();
         double dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist < 0.045 || dist > 2.0) return; // standing still, jitter, turning, or teleported
+        // standing still, sliding slowly while its owner turns, jitter, or teleported: not walking
+        if (dist < 0.07 || dist > 2.0) {
+            m.moveStreak = 0;
+            return;
+        }
+        if (++m.moveStreak < 2) return; // must keep moving for two steps in a row
         m.swingPhase += dist / 0.9 * Math.PI;
         m.swingAmp = 1.0;
         m.lastMoveMs = System.currentTimeMillis();
@@ -2145,7 +2153,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     }
 
     private int screenCols() {
-        return Math.max(8, Math.min(40, getConfig().getInt("mascot.screen-cols", 14)));
+        return Math.max(8, Math.min(40, getConfig().getInt("mascot.screen-cols", 18)));
     }
 
     private int screenRows() {
