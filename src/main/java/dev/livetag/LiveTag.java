@@ -157,6 +157,8 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     private final Set<UUID> preview = new HashSet<>();
     /** Streamers whose mascot stands still instead of following them. */
     private final Set<UUID> stay = new HashSet<>();
+    /** Mascot bodies that really died (a death event fired), as opposed to being removed because their chunk unloaded. */
+    private final Set<UUID> deadBodies = new HashSet<>();
     /** Streamers who have been live on Twitch at least once - only they get a mascot. */
     private final Set<UUID> streamed = new HashSet<>();
     private final Set<UUID> idleDead = new HashSet<>(); // mascots that died from the streamer being offline too long
@@ -1671,8 +1673,13 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
             Mascot m = mascots.get(id);
             // killed in a way we did not see (for example /kill): treat it as a normal death
             if (m != null && !m.isGrave && m.body != null && m.body.isDead()) {
-                killMascot(m, null, null);
-                continue;
+                if (deadBodies.remove(m.body.getUniqueId())) {
+                    killMascot(m, null, null);
+                    continue;
+                }
+                // The body was only unloaded with its chunk (the owner was away or just came back): not a death. Respawn it.
+                discard(m);
+                m = null;
             }
             if (m == null || m.isGrave != grave || !m.valid()) {
                 if (m != null) discard(m);
@@ -3556,6 +3563,7 @@ public class LiveTag extends JavaPlugin implements Listener, TabExecutor {
     @EventHandler
     public void onMascotBodyDeath(org.bukkit.event.entity.EntityDeathEvent e) {
         if (!isMascotEntity(e.getEntity())) return;
+        deadBodies.add(e.getEntity().getUniqueId());
         e.getDrops().clear();
         e.setDroppedExp(0);
     }
